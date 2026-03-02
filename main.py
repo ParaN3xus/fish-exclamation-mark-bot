@@ -431,6 +431,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--render-fps", type=float, default=60.0, help="matplotlib update FPS"
     )
     parser.add_argument(
+        "--render-time-scale",
+        type=float,
+        default=1.0,
+        help="simulation seconds per wall second in render mode (1.0=realtime)",
+    )
+    parser.add_argument(
+        "--render-max-steps-per-frame",
+        type=int,
+        default=8,
+        help="max simulation steps advanced per GUI frame to catch up realtime",
+    )
+    parser.add_argument(
         "--render-runs",
         type=int,
         default=5,
@@ -484,6 +496,8 @@ def main() -> None:
             runs=max(0, args.render_runs),
             window_seconds=args.render_window_seconds,
             render_fps=args.render_fps,
+            time_scale=args.render_time_scale,
+            max_steps_per_frame=args.render_max_steps_per_frame,
         )
         if summaries:
             total_runs = len(summaries)

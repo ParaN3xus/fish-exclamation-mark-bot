@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from random import Random
+import time
 from typing import Any
 
 from src.control import Policy
@@ -34,6 +35,8 @@ def render_matplotlib_runs(
     runs: int,
     window_seconds: float,
     render_fps: float,
+    time_scale: float,
+    max_steps_per_frame: int,
 ) -> list[RenderEpisodeSummary]:
     """
     Render one or multiple episodes in a single matplotlib window.
@@ -46,6 +49,8 @@ def render_matplotlib_runs(
     difficulty = int(_clamp(float(difficulty), 1.0, 9.0))
     window_seconds = max(0.5, window_seconds)
     render_fps = max(1.0, render_fps)
+    time_scale = max(1e-6, time_scale)
+    max_steps_per_frame = max(1, max_steps_per_frame)
     dt = env.config.dt
     history_maxlen = max(100, int(window_seconds / max(dt, 1e-4)) + 10)
 
@@ -65,13 +70,11 @@ def render_matplotlib_runs(
     strip_ax.set_ylim(0.0, 1.0)
     strip_ax.set_xticks([])
     strip_ax.set_yticks([0.0, 0.5, 1.0])
-    strip_ax.set_title("Fish + Player Overlay")
+    strip_ax.set_title("Minigame GUI")
 
     (fish_line,) = curve_ax.plot([], [], color="#1f77b4", lw=1.8, label="fish")
     (player_line,) = curve_ax.plot([], [], color="#ff7f0e", lw=1.8, label="player")
-    (progress_line,) = curve_ax.plot(
-        [], [], color="#2ca02c", lw=1.8, label="progress"
-    )
+    (progress_line,) = curve_ax.plot([], [], color="#2ca02c", lw=1.8, label="progress")
     progress_text = curve_ax.text(
         0.01, 0.98, "", transform=curve_ax.transAxes, va="top", ha="left"
     )
@@ -107,9 +110,11 @@ def render_matplotlib_runs(
     current_obs: Any = None
     pause_frames = 0
     max_runs = runs
+    last_wall_time = time.perf_counter()
+    sim_time_budget = 0.0
 
     def start_new_episode() -> bool:
-        nonlocal run_idx, current_seed, current_obs
+        nonlocal run_idx, current_seed, current_obs, last_wall_time, sim_time_budget
         if max_runs > 0 and run_idx >= max_runs:
             return False
         current_seed = rng.randint(0, 2_000_000_000)
@@ -123,6 +128,8 @@ def render_matplotlib_runs(
         fish_hist.append(env.fish_position)
         player_hist.append(env.player_position)
         progress_hist.append(env.catch_progress)
+        last_wall_time = time.perf_counter()
+        sim_time_budget = 0.0
         run_idx += 1
         return True
 
@@ -182,7 +189,11 @@ def render_matplotlib_runs(
         anim.event_source.stop()
 
     def animate(_frame: int) -> tuple[Any, ...]:
-        nonlocal current_obs, pause_frames
+        nonlocal current_obs, pause_frames, last_wall_time, sim_time_budget
+        now = time.perf_counter()
+        elapsed_wall = max(0.0, now - last_wall_time)
+        last_wall_time = now
+
         if pause_frames > 0:
             pause_frames -= 1
             if pause_frames == 0:
@@ -200,13 +211,38 @@ def render_matplotlib_runs(
                 player_marker,
             )
 
-        action = policy.act(current_obs)
-        current_obs, _reward, done, truncated, _info = env.step(action)
+        sim_time_budget += elapsed_wall * time_scale
+        step_count = int(sim_time_budget / max(dt, 1e-9))
+        if step_count <= 0:
+            update_curve_artists()
+            return (
+                fish_line,
+                player_line,
+                progress_line,
+                progress_text,
+                fish_hitbox,
+                player_box,
+                fish_marker,
+                player_marker,
+            )
+        step_count = min(step_count, max_steps_per_frame)
 
-        times.append(env.total_fight_time)
-        fish_hist.append(env.fish_position)
-        player_hist.append(env.player_position)
-        progress_hist.append(env.catch_progress)
+        done = False
+        truncated = False
+        for _ in range(step_count):
+            action = policy.act(current_obs)
+            current_obs, _reward, done, truncated, _info = env.step(action)
+
+            times.append(env.total_fight_time)
+            fish_hist.append(env.fish_position)
+            player_hist.append(env.player_position)
+            progress_hist.append(env.catch_progress)
+
+            sim_time_budget -= dt
+            if sim_time_budget < 0.0:
+                sim_time_budget = 0.0
+            if done or truncated:
+                break
 
         update_curve_artists()
 
