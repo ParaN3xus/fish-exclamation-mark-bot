@@ -4,7 +4,12 @@ import argparse
 import math
 from dataclasses import dataclass
 
-from src.control import BaselinePolicy, Policy, TimeOptimalBangBangPolicy
+from src.control import (
+    BaselinePolicy,
+    Policy,
+    StochasticOutputFeedbackMPCPolicy,
+    TimeOptimalBangBangPolicy,
+)
 from src.gym import FishingEnv, FishingEnvConfig
 from src.gym.matplotlib_viewer import render_matplotlib_runs
 
@@ -40,6 +45,29 @@ def parse_difficulties(raw: str) -> list[int]:
     if not result:
         raise ValueError("no difficulty parsed")
     return result
+
+
+def parse_policy_names(raw: str, available: tuple[str, ...]) -> list[str]:
+    normalized = raw.strip().lower()
+    if normalized == "all":
+        return list(available)
+
+    names: list[str] = []
+    seen: set[str] = set()
+    for token in normalized.split(","):
+        name = token.strip()
+        if not name:
+            continue
+        if name not in available:
+            raise ValueError(
+                f"unknown policy '{name}', available: {', '.join(available)}"
+            )
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not names:
+        raise ValueError("no policy parsed")
+    return names
 
 
 def run_episode(
@@ -93,38 +121,40 @@ def evaluate_policy(
     return results
 
 
-def print_comparison(
-    bangbang_results: list[EvalResult],
-    baseline_results: list[EvalResult],
+def print_results_table(
+    results_by_key: dict[str, list[EvalResult]],
+    policy_order: list[str],
+    difficulties: list[int],
 ) -> None:
     print(
-        "difficulty | policy                | success_rate | "
+        "difficulty | policy                        | success_rate | "
         "avg_success_time(s) | avg_episode_time(s)"
     )
     print(
-        "-----------+-----------------------+--------------+---------------------+-------------------"
+        "-----------+-------------------------------+--------------+---------------------+-------------------"
     )
-    lookup_baseline = {r.difficulty: r for r in baseline_results}
-    for b in bangbang_results:
-        base = lookup_baseline[b.difficulty]
-        b_success_time = (
-            "nan" if math.isnan(b.avg_success_time) else f"{b.avg_success_time:7.3f}"
-        )
-        base_success_time = (
-            "nan"
-            if math.isnan(base.avg_success_time)
-            else f"{base.avg_success_time:7.3f}"
-        )
+
+    lookup: dict[str, dict[int, EvalResult]] = {
+        key: {result.difficulty: result for result in results}
+        for key, results in results_by_key.items()
+    }
+
+    for difficulty in difficulties:
+        for idx, key in enumerate(policy_order):
+            result = lookup[key][difficulty]
+            success_time = (
+                "nan"
+                if math.isnan(result.avg_success_time)
+                else f"{result.avg_success_time:7.3f}"
+            )
+            difficulty_text = f"{difficulty:9d}" if idx == 0 else f"{'':9s}"
+            print(
+                f"{difficulty_text} | {result.policy_name:29s} | "
+                f"{result.success_rate:10.3%} | {success_time:>19s} | "
+                f"{result.avg_episode_time:17.3f}"
+            )
         print(
-            f"{b.difficulty:9d} | {b.policy_name:21s} | {b.success_rate:10.3%} | "
-            f"{b_success_time:>19s} | {b.avg_episode_time:17.3f}"
-        )
-        print(
-            f"{'':9s} | {base.policy_name:21s} | {base.success_rate:10.3%} | "
-            f"{base_success_time:>19s} | {base.avg_episode_time:17.3f}"
-        )
-        print(
-            "-----------+-----------------------+--------------+---------------------+-------------------"
+            "-----------+-------------------------------+--------------+---------------------+-------------------"
         )
 
 
@@ -137,6 +167,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--difficulties", type=str, default="1-9", help="e.g. 1-9 or 1,3,5,7,9"
+    )
+    parser.add_argument(
+        "--policies",
+        type=str,
+        default="mpc,bangbang,baseline",
+        help="comma-separated policies or 'all' (choices: mpc,bangbang,baseline)",
     )
     parser.add_argument(
         "--dt", type=float, default=1.0 / 60.0, help="simulation step size"
@@ -161,7 +197,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="render in matplotlib (supports multiple episodes)",
     )
     parser.add_argument(
-        "--render-policy", choices=["bangbang", "baseline"], default="bangbang"
+        "--render-policy",
+        choices=["mpc", "bangbang", "baseline"],
+        default="mpc",
     )
     parser.add_argument("--render-difficulty", type=int, default=5)
     parser.add_argument(
@@ -197,23 +235,32 @@ def main() -> None:
     )
     env = FishingEnv(config=config)
 
-    bangbang = TimeOptimalBangBangPolicy(
-        player_speed=env.player_speed,
-        gravity=env.gravity,
-        equipment_strength=args.equipment_strength,
-        equipment_expertise=args.equipment_expertise,
-        smoothed_fps=args.smoothed_fps,
-        is_vr=args.vr,
-    )
-    baseline = BaselinePolicy(
-        equipment_strength=args.equipment_strength,
-        equipment_expertise=args.equipment_expertise,
-    )
+    policy_registry: dict[str, Policy] = {
+        "mpc": StochasticOutputFeedbackMPCPolicy(
+            player_speed=env.player_speed,
+            gravity=env.gravity,
+            equipment_strength=args.equipment_strength,
+            equipment_expertise=args.equipment_expertise,
+            smoothed_fps=args.smoothed_fps,
+            is_vr=args.vr,
+        ),
+        "bangbang": TimeOptimalBangBangPolicy(
+            player_speed=env.player_speed,
+            gravity=env.gravity,
+            equipment_strength=args.equipment_strength,
+            equipment_expertise=args.equipment_expertise,
+            smoothed_fps=args.smoothed_fps,
+            is_vr=args.vr,
+        ),
+        "baseline": BaselinePolicy(
+            equipment_strength=args.equipment_strength,
+            equipment_expertise=args.equipment_expertise,
+        ),
+    }
+    available_policies = tuple(policy_registry.keys())
 
     if args.render:
-        selected_policy: Policy = (
-            bangbang if args.render_policy == "bangbang" else baseline
-        )
+        selected_policy = policy_registry[args.render_policy]
         difficulty = int(max(1, min(9, args.render_difficulty)))
         summaries = render_matplotlib_runs(
             env=env,
@@ -254,22 +301,18 @@ def main() -> None:
             print("render session done: no episode executed.")
         return
 
-    bangbang_results = evaluate_policy(
-        env=env,
-        policy=bangbang,
-        difficulties=difficulties,
-        episodes=args.episodes,
-        seed=args.seed,
-    )
-    baseline_results = evaluate_policy(
-        env=env,
-        policy=baseline,
-        difficulties=difficulties,
-        episodes=args.episodes,
-        seed=args.seed,
-    )
+    selected_keys = parse_policy_names(args.policies, available_policies)
+    results_by_key: dict[str, list[EvalResult]] = {}
+    for key in selected_keys:
+        results_by_key[key] = evaluate_policy(
+            env=env,
+            policy=policy_registry[key],
+            difficulties=difficulties,
+            episodes=args.episodes,
+            seed=args.seed,
+        )
 
-    print_comparison(bangbang_results, baseline_results)
+    print_results_table(results_by_key, selected_keys, difficulties)
 
 
 if __name__ == "__main__":
