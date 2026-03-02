@@ -198,9 +198,15 @@ def main() -> None:
     env = FishingEnv(config=config)
 
     bangbang = TimeOptimalBangBangPolicy(
-        player_speed=env.player_speed, gravity=env.gravity
+        player_speed=env.player_speed,
+        gravity=env.gravity,
+        equipment_strength=args.equipment_strength,
+        equipment_expertise=args.equipment_expertise,
     )
-    baseline = BaselinePolicy()
+    baseline = BaselinePolicy(
+        equipment_strength=args.equipment_strength,
+        equipment_expertise=args.equipment_expertise,
+    )
 
     if args.render:
         selected_policy: Policy = (

@@ -19,9 +19,16 @@ class Policy:
 class BaselinePolicy(Policy):
     """Simple chase controller for comparison."""
 
-    def __init__(self, deadzone: float = 0.01) -> None:
+    def __init__(
+        self,
+        deadzone: float = 0.01,
+        equipment_strength: int = 0,
+        equipment_expertise: int = 0,
+    ) -> None:
         super().__init__(name="baseline_chase")
         self.deadzone = deadzone
+        self.equipment_strength = equipment_strength
+        self.equipment_expertise = equipment_expertise
 
     def act(self, obs: FishingObservation) -> int:
         error = obs.fish_center - obs.player_center
@@ -55,12 +62,19 @@ class TimeOptimalBangBangPolicy(Policy):
     """
 
     def __init__(
-        self, player_speed: float = 3.0, gravity: float = 1.5, vel_epsilon: float = 1e-6
+        self,
+        player_speed: float = 3.0,
+        gravity: float = 1.5,
+        vel_epsilon: float = 1e-6,
+        equipment_strength: int = 0,
+        equipment_expertise: int = 0,
     ) -> None:
         super().__init__(name="time_optimal_bangbang")
         self.player_speed = player_speed
         self.gravity = gravity
         self.vel_epsilon = vel_epsilon
+        self.equipment_strength = equipment_strength
+        self.equipment_expertise = equipment_expertise
 
         self.a_up = player_speed - gravity
         self.a_down = -gravity
