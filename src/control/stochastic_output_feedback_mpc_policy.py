@@ -17,6 +17,7 @@ class StochasticOutputFeedbackMPCPolicy(TimeOptimalBangBangPolicy):
         equipment_expertise: int = 0,
         smoothed_fps: float = 60.0,
         is_vr: bool = False,
+        initial_difficulty_estimate: float = 7.2,
         progress_ref: float = 0.42,
         hard_start: float = 6.0,
         hard_span: float = 3.0,
@@ -38,6 +39,7 @@ class StochasticOutputFeedbackMPCPolicy(TimeOptimalBangBangPolicy):
             equipment_expertise=equipment_expertise,
             smoothed_fps=smoothed_fps,
             is_vr=is_vr,
+            initial_difficulty_estimate=initial_difficulty_estimate,
         )
         self.name = "stochastic_output_feedback_mpc"
 

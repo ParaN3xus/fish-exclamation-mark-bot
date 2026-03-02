@@ -28,7 +28,29 @@ class TimeOptimalBangBangPolicy(Policy):
         equipment_expertise: int = 0,
         smoothed_fps: float = 60.0,
         is_vr: bool = False,
-        initial_difficulty_estimate: float = 6.0,
+        initial_difficulty_estimate: float = 7.2,
+        difficulty_up_blend: float = 0.30,
+        difficulty_down_blend: float = 0.08,
+        robust_horizon_base_seconds: float = 0.30,
+        robust_horizon_danger_seconds: float = 0.34,
+        robust_horizon_min_steps: int = 12,
+        robust_horizon_max_steps: int = 34,
+        robust_risk_base: float = 0.84,
+        robust_risk_danger_gain: float = 0.12,
+        robust_risk_dnorm_gain: float = 0.08,
+        robust_risk_max: float = 0.995,
+        danger_progress_ref: float = 0.52,
+        target_bias_base: float = 0.10,
+        target_bias_danger_gain: float = 0.12,
+        recovery_band_base: float = 2.2,
+        recovery_band_danger_gain: float = 1.5,
+        safe_band_base: float = 0.74,
+        safe_band_danger_gain: float = 0.16,
+        one_step_override_danger_threshold: float = 0.12,
+        robust_eval_difficulty_threshold: float = 5.8,
+        robust_eval_danger_threshold: float = 0.05,
+        robust_inner_target_bias_base: float = 0.08,
+        robust_inner_target_bias_danger_gain: float = 0.12,
     ) -> None:
         super().__init__(name="time_optimal_bangbang")
         self.player_speed = player_speed
@@ -41,6 +63,32 @@ class TimeOptimalBangBangPolicy(Policy):
         self.initial_difficulty_estimate = self._clamp(
             float(initial_difficulty_estimate), 1.0, 9.0
         )
+        self.difficulty_up_blend = self._clamp(difficulty_up_blend, 0.0, 1.0)
+        self.difficulty_down_blend = self._clamp(difficulty_down_blend, 0.0, 1.0)
+        self.robust_horizon_base_seconds = max(0.0, robust_horizon_base_seconds)
+        self.robust_horizon_danger_seconds = max(0.0, robust_horizon_danger_seconds)
+        self.robust_horizon_min_steps = max(1, int(robust_horizon_min_steps))
+        self.robust_horizon_max_steps = max(
+            self.robust_horizon_min_steps, int(robust_horizon_max_steps)
+        )
+        self.robust_risk_base = self._clamp(robust_risk_base, 0.0, 1.0)
+        self.robust_risk_danger_gain = max(0.0, robust_risk_danger_gain)
+        self.robust_risk_dnorm_gain = max(0.0, robust_risk_dnorm_gain)
+        self.robust_risk_max = self._clamp(robust_risk_max, 0.0, 0.999999)
+        self.danger_progress_ref = max(1e-6, danger_progress_ref)
+        self.target_bias_base = target_bias_base
+        self.target_bias_danger_gain = target_bias_danger_gain
+        self.recovery_band_base = recovery_band_base
+        self.recovery_band_danger_gain = recovery_band_danger_gain
+        self.safe_band_base = safe_band_base
+        self.safe_band_danger_gain = safe_band_danger_gain
+        self.one_step_override_danger_threshold = max(
+            0.0, one_step_override_danger_threshold
+        )
+        self.robust_eval_difficulty_threshold = robust_eval_difficulty_threshold
+        self.robust_eval_danger_threshold = max(0.0, robust_eval_danger_threshold)
+        self.robust_inner_target_bias_base = robust_inner_target_bias_base
+        self.robust_inner_target_bias_danger_gain = robust_inner_target_bias_danger_gain
 
         # Net player accelerations (from env update equation).
         self.a_up = player_speed - gravity
@@ -267,7 +315,16 @@ class TimeOptimalBangBangPolicy(Policy):
             jump_norm = self._clamp01((jump_distance - 0.18) / 0.12)
             obs_norm = 0.45 * interval_norm + 0.55 * jump_norm
             current_norm = self._difficulty_normalized(self._difficulty_est)
-            blended_norm = 0.85 * current_norm + 0.15 * obs_norm
+            if obs_norm >= current_norm:
+                blended_norm = (
+                    (1.0 - self.difficulty_up_blend) * current_norm
+                    + self.difficulty_up_blend * obs_norm
+                )
+            else:
+                blended_norm = (
+                    (1.0 - self.difficulty_down_blend) * current_norm
+                    + self.difficulty_down_blend * obs_norm
+                )
             self._difficulty_est = self._clamp(1.0 + 8.0 * blended_norm, 1.0, 9.0)
             self._time_since_target_change = 0.0
         else:
@@ -389,7 +446,21 @@ class TimeOptimalBangBangPolicy(Policy):
         threshold: float,
     ) -> float:
         dt = max(obs.dt, self.vel_epsilon)
-        horizon_steps = max(8, min(22, int(round((0.22 + 0.22 * danger) / dt))))
+        horizon_steps = max(
+            self.robust_horizon_min_steps,
+            min(
+                self.robust_horizon_max_steps,
+                int(
+                    round(
+                        (
+                            self.robust_horizon_base_seconds
+                            + self.robust_horizon_danger_seconds * danger
+                        )
+                        / dt
+                    )
+                ),
+            ),
+        )
         difficulty = self._difficulty_est
         d_norm = self._difficulty_normalized(difficulty)
 
@@ -447,7 +518,10 @@ class TimeOptimalBangBangPolicy(Policy):
                     action = first_action
                 else:
                     rel_v = fish_vel - player_v_sim
-                    target_bias = (0.08 + 0.12 * danger) * threshold
+                    target_bias = (
+                        self.robust_inner_target_bias_base
+                        + self.robust_inner_target_bias_danger_gain * danger
+                    ) * threshold
                     y = (fish - player) - target_bias
                     action = self._min_time_first_action(y, rel_v)
 
@@ -485,7 +559,13 @@ class TimeOptimalBangBangPolicy(Policy):
         scenario_scores.sort()
         worst = scenario_scores[0]
         mean = sum(scenario_scores) / float(len(scenario_scores))
-        risk_weight = 0.65 + 0.3 * danger + 0.1 * d_norm
+        risk_weight = self._clamp(
+            self.robust_risk_base
+            + self.robust_risk_danger_gain * danger
+            + self.robust_risk_dnorm_gain * d_norm,
+            0.0,
+            self.robust_risk_max,
+        )
         return risk_weight * worst + (1.0 - risk_weight) * mean
 
     def act(self, obs: FishingObservation) -> int:
@@ -498,7 +578,9 @@ class TimeOptimalBangBangPolicy(Policy):
         error_now = obs.fish_center - obs.player_center
         rel_v = fish_v - player_v
 
-        danger = self._clamp01((0.4 - self._progress_est) / 0.4)
+        danger = self._clamp01(
+            (self.danger_progress_ref - self._progress_est) / self.danger_progress_ref
+        )
         predicted_fish = self._predict_fish_center(
             fish_center=obs.fish_center,
             difficulty=difficulty,
@@ -507,10 +589,14 @@ class TimeOptimalBangBangPolicy(Policy):
         )
 
         # Stay slightly below fish center to absorb downward slips.
-        target_bias = (0.08 + 0.10 * danger) * threshold
+        target_bias = (
+            self.target_bias_base + self.target_bias_danger_gain * danger
+        ) * threshold
         y0 = (predicted_fish - obs.player_center) - target_bias
 
-        recovery_band = threshold * (1.8 + 1.2 * danger)
+        recovery_band = threshold * (
+            self.recovery_band_base + self.recovery_band_danger_gain * danger
+        )
         if abs(error_now) > recovery_band:
             action = 1 if (error_now + 0.22 * rel_v) > 0.0 else 0
             self._last_action = action
@@ -527,7 +613,9 @@ class TimeOptimalBangBangPolicy(Policy):
         action = self._min_time_first_action(y0, rel_v)
 
         # In-band regulation with hysteresis reduces chattering and misses.
-        safe_band = threshold * (0.78 - 0.12 * danger)
+        safe_band = threshold * (
+            self.safe_band_base - self.safe_band_danger_gain * danger
+        )
         if abs(error_now) < safe_band and abs(rel_v) < (0.26 + 0.18 * danger):
             s = y0 + 0.12 * rel_v
             hysteresis = (0.03 + 0.03 * danger) * threshold
@@ -538,7 +626,7 @@ class TimeOptimalBangBangPolicy(Policy):
             action = 1 if s > 0.0 else 0
 
         # One-step risk check: choose action that better preserves overlap when fragile.
-        if danger > 0.2:
+        if danger > self.one_step_override_danger_threshold:
             fish_next = self._clamp01(obs.fish_center + fish_v * dt)
             x0, _ = self._step_player(obs.player_center, player_v, dt, 0)
             x1, _ = self._step_player(obs.player_center, player_v, dt, 1)
@@ -549,7 +637,10 @@ class TimeOptimalBangBangPolicy(Policy):
             elif out1 + 1e-9 < out0:
                 action = 1
 
-        if difficulty >= 7.0 or danger > 0.15:
+        if (
+            difficulty >= self.robust_eval_difficulty_threshold
+            or danger > self.robust_eval_danger_threshold
+        ):
             score0 = self._evaluate_first_action_robust(
                 first_action=0,
                 obs=obs,

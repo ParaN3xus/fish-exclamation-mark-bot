@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from src.control import (
     BaselinePolicy,
+    BeliefSpaceLocalOptPolicy,
     Policy,
     StochasticOutputFeedbackMPCPolicy,
     TimeOptimalBangBangPolicy,
@@ -125,6 +126,15 @@ def build_policy(
         )
     if policy_key == "bangbang":
         return TimeOptimalBangBangPolicy(
+            player_speed=player_speed,
+            gravity=gravity,
+            equipment_strength=equipment_strength,
+            equipment_expertise=equipment_expertise,
+            smoothed_fps=smoothed_fps,
+            is_vr=is_vr,
+        )
+    if policy_key == "belief":
+        return BeliefSpaceLocalOptPolicy(
             player_speed=player_speed,
             gravity=gravity,
             equipment_strength=equipment_strength,
@@ -377,8 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policies",
         type=str,
-        default="mpc,bangbang,baseline",
-        help="comma-separated policies or 'all' (choices: mpc,bangbang,baseline)",
+        default="mpc,bangbang,belief,baseline",
+        help=(
+            "comma-separated policies or 'all' "
+            "(choices: mpc,bangbang,belief,baseline)"
+        ),
     )
     parser.add_argument(
         "--eval-workers",
@@ -410,7 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--render-policy",
-        choices=["mpc", "bangbang", "baseline"],
+        choices=["mpc", "bangbang", "belief", "baseline"],
         default="mpc",
     )
     parser.add_argument("--render-difficulty", type=int, default=5)
@@ -437,7 +450,7 @@ def main() -> None:
     difficulties = parse_difficulties(args.difficulties)
     eval_workers = resolve_eval_workers(args.eval_workers)
 
-    available_policies = ("mpc", "bangbang", "baseline")
+    available_policies = ("mpc", "bangbang", "belief", "baseline")
     selected_keys = parse_policy_names(args.policies, available_policies)
 
     if args.render:
