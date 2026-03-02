@@ -28,6 +28,7 @@ class TimeOptimalBangBangPolicy(Policy):
         equipment_expertise: int = 0,
         smoothed_fps: float = 60.0,
         is_vr: bool = False,
+        initial_difficulty_estimate: float = 6.0,
     ) -> None:
         super().__init__(name="time_optimal_bangbang")
         self.player_speed = player_speed
@@ -37,6 +38,9 @@ class TimeOptimalBangBangPolicy(Policy):
         self.equipment_expertise = equipment_expertise
         self.smoothed_fps = smoothed_fps
         self.is_vr = is_vr
+        self.initial_difficulty_estimate = self._clamp(
+            float(initial_difficulty_estimate), 1.0, 9.0
+        )
 
         # Net player accelerations (from env update equation).
         self.a_up = player_speed - gravity
@@ -76,6 +80,7 @@ class TimeOptimalBangBangPolicy(Policy):
         # Hidden-state reconstruction for fish first-order model.
         self._fish_target_est = 0.5
         self._time_since_target_change = 0.0
+        self._difficulty_est = self.initial_difficulty_estimate
 
         # Progress estimate reconstructed from observations.
         self._progress_est = 0.1
@@ -91,6 +96,7 @@ class TimeOptimalBangBangPolicy(Policy):
 
         self._fish_target_est = 0.5
         self._time_since_target_change = 0.0
+        self._difficulty_est = self.initial_difficulty_estimate
 
         self._progress_est = 0.1
         self._elapsed_est = 0.0
@@ -212,12 +218,13 @@ class TimeOptimalBangBangPolicy(Policy):
 
         dt = max(obs.dt, self.vel_epsilon)
         self._elapsed_est += dt
-        threshold = self._overlap_threshold(obs.difficulty)
+        difficulty = self._difficulty_est
+        threshold = self._overlap_threshold(difficulty)
         catching = abs(obs.fish_center - obs.player_center) < threshold
         delta = self._progress_delta(
             catching=catching,
             elapsed_time=self._elapsed_est,
-            difficulty=obs.difficulty,
+            difficulty=difficulty,
             dt=dt,
         )
         self._progress_est = self._clamp01(self._progress_est + delta)
@@ -238,7 +245,8 @@ class TimeOptimalBangBangPolicy(Policy):
         self._v_est = 0.8 * self._v_est + 0.2 * raw_player_v
         self._fish_v_est = 0.65 * self._fish_v_est + 0.35 * raw_fish_v
 
-        decay = self._fish_decay_rate(obs.difficulty)
+        difficulty = self._difficulty_est
+        decay = self._fish_decay_rate(difficulty)
         alpha = 1.0 - math.exp(-decay * dt)
         if alpha > 1e-6:
             inferred_target = self._last_fish_center + (
@@ -248,9 +256,19 @@ class TimeOptimalBangBangPolicy(Policy):
             inferred_target = obs.fish_center
         inferred_target = self._clamp01(inferred_target)
 
-        d_norm = self._difficulty_normalized(obs.difficulty)
+        d_norm = self._difficulty_normalized(difficulty)
         jump_detect_threshold = 0.035 + 0.065 * d_norm
-        if abs(inferred_target - self._fish_target_est) > jump_detect_threshold:
+        jump_distance = abs(inferred_target - self._fish_target_est)
+        if jump_distance > jump_detect_threshold:
+            observed_interval = max(dt, self._time_since_target_change + dt)
+            interval_norm = self._clamp01(
+                (self.easy_direction_time - observed_interval) / 0.1
+            )
+            jump_norm = self._clamp01((jump_distance - 0.18) / 0.12)
+            obs_norm = 0.45 * interval_norm + 0.55 * jump_norm
+            current_norm = self._difficulty_normalized(self._difficulty_est)
+            blended_norm = 0.85 * current_norm + 0.15 * obs_norm
+            self._difficulty_est = self._clamp(1.0 + 8.0 * blended_norm, 1.0, 9.0)
             self._time_since_target_change = 0.0
         else:
             self._time_since_target_change += dt
@@ -372,12 +390,13 @@ class TimeOptimalBangBangPolicy(Policy):
     ) -> float:
         dt = max(obs.dt, self.vel_epsilon)
         horizon_steps = max(8, min(22, int(round((0.22 + 0.22 * danger) / dt))))
-        d_norm = self._difficulty_normalized(obs.difficulty)
+        difficulty = self._difficulty_est
+        d_norm = self._difficulty_normalized(difficulty)
 
-        direction_time = self._direction_time(obs.difficulty)
+        direction_time = self._direction_time(difficulty)
         time_to_next_change = max(0.0, direction_time - self._time_since_target_change)
-        alpha = 1.0 - math.exp(-self._fish_decay_rate(obs.difficulty) * dt)
-        max_jump = self._max_fish_jump(obs.difficulty)
+        alpha = 1.0 - math.exp(-self._fish_decay_rate(difficulty) * dt)
+        max_jump = self._max_fish_jump(difficulty)
 
         low_target = self._clamp01(
             self._clamp(
@@ -444,7 +463,7 @@ class TimeOptimalBangBangPolicy(Policy):
                 progress += self._progress_delta(
                     catching=catching,
                     elapsed_time=elapsed,
-                    difficulty=obs.difficulty,
+                    difficulty=difficulty,
                     dt=dt,
                 )
                 progress = self._clamp01(progress)
@@ -474,14 +493,15 @@ class TimeOptimalBangBangPolicy(Policy):
         player_v, fish_v = self._estimate_kinematics(obs)
 
         dt = max(obs.dt, self.vel_epsilon)
-        threshold = self._overlap_threshold(obs.difficulty)
+        difficulty = self._difficulty_est
+        threshold = self._overlap_threshold(difficulty)
         error_now = obs.fish_center - obs.player_center
         rel_v = fish_v - player_v
 
         danger = self._clamp01((0.4 - self._progress_est) / 0.4)
         predicted_fish = self._predict_fish_center(
             fish_center=obs.fish_center,
-            difficulty=obs.difficulty,
+            difficulty=difficulty,
             danger=danger,
             fish_velocity=fish_v,
         )
@@ -529,7 +549,7 @@ class TimeOptimalBangBangPolicy(Policy):
             elif out1 + 1e-9 < out0:
                 action = 1
 
-        if obs.difficulty >= 7.0 or danger > 0.15:
+        if difficulty >= 7.0 or danger > 0.15:
             score0 = self._evaluate_first_action_robust(
                 first_action=0,
                 obs=obs,

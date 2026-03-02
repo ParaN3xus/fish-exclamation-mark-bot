@@ -28,7 +28,6 @@ class FishingObservation:
     fish_center: float
     player_center: float
     dt: float
-    difficulty: float
 
 
 @dataclass(slots=True)
@@ -180,7 +179,6 @@ class FishingEnv:
             fish_center=self.fish_position,
             player_center=self.player_position,
             dt=self.config.dt,
-            difficulty=float(self.current_difficulty),
         )
 
     def reset(
