@@ -69,6 +69,9 @@ def render_matplotlib_runs(
 
     (fish_line,) = curve_ax.plot([], [], color="#1f77b4", lw=1.8, label="fish")
     (player_line,) = curve_ax.plot([], [], color="#ff7f0e", lw=1.8, label="player")
+    (progress_line,) = curve_ax.plot(
+        [], [], color="#2ca02c", lw=1.8, label="progress"
+    )
     progress_text = curve_ax.text(
         0.01, 0.98, "", transform=curve_ax.transAxes, va="top", ha="left"
     )
@@ -97,6 +100,7 @@ def render_matplotlib_runs(
     times: deque[float] = deque(maxlen=history_maxlen)
     fish_hist: deque[float] = deque(maxlen=history_maxlen)
     player_hist: deque[float] = deque(maxlen=history_maxlen)
+    progress_hist: deque[float] = deque(maxlen=history_maxlen)
 
     run_idx = 0
     current_seed = 0
@@ -114,9 +118,11 @@ def render_matplotlib_runs(
         times.clear()
         fish_hist.clear()
         player_hist.clear()
+        progress_hist.clear()
         times.append(env.total_fight_time)
         fish_hist.append(env.fish_position)
         player_hist.append(env.player_position)
+        progress_hist.append(env.catch_progress)
         run_idx += 1
         return True
 
@@ -142,6 +148,7 @@ def render_matplotlib_runs(
     def update_curve_artists() -> None:
         fish_line.set_data(list(times), list(fish_hist))
         player_line.set_data(list(times), list(player_hist))
+        progress_line.set_data(list(times), list(progress_hist))
         t_now = env.total_fight_time
         curve_ax.set_xlim(max(0.0, t_now - window_seconds), max(window_seconds, t_now))
 
@@ -185,6 +192,7 @@ def render_matplotlib_runs(
             return (
                 fish_line,
                 player_line,
+                progress_line,
                 progress_text,
                 fish_hitbox,
                 player_box,
@@ -198,6 +206,7 @@ def render_matplotlib_runs(
         times.append(env.total_fight_time)
         fish_hist.append(env.fish_position)
         player_hist.append(env.player_position)
+        progress_hist.append(env.catch_progress)
 
         update_curve_artists()
 
@@ -210,6 +219,7 @@ def render_matplotlib_runs(
         return (
             fish_line,
             player_line,
+            progress_line,
             progress_text,
             fish_hitbox,
             player_box,
