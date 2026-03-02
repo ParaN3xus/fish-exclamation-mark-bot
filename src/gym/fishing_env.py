@@ -282,8 +282,8 @@ class FishingEnv:
         self._update_fish()
         self._update_player(is_input_pressed)
         self._update_progress()
-
         reward = self.catch_progress - previous_progress
+
         truncated = self.step_count >= self.config.max_steps
 
         if self.catch_progress >= 1.0:
@@ -294,28 +294,9 @@ class FishingEnv:
             self.terminated = True
             self.success = False
             reward -= 1.0
-        elif truncated:
+
+        if truncated and not self.terminated:
             self.terminated = True
             self.success = False
 
         return self._observation(), reward, self.terminated, truncated, self._info()
-
-    def render_ascii(self, width: int = 80) -> str:
-        width = max(20, width)
-        fish_idx = int(round(self.fish_position * (width - 1)))
-        player_idx = int(round(self.player_position * (width - 1)))
-        half_window = int(round(self.overlap_threshold * (width - 1)))
-        left = max(0, player_idx - half_window)
-        right = min(width - 1, player_idx + half_window)
-
-        chars = [" "] * width
-        for idx in range(left, right + 1):
-            chars[idx] = "="
-        chars[player_idx] = "P"
-        chars[fish_idx] = "F" if fish_idx != player_idx else "*"
-        bar = "".join(chars)
-        return (
-            f"|{bar}|\n"
-            f"time={self.total_fight_time:6.2f}s progress={self.catch_progress:5.3f} "
-            f"fish={self.fish_position:5.3f} player={self.player_position:5.3f} vel={self.player_velocity:6.3f}"
-        )

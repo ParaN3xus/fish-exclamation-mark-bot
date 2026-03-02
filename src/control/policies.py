@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.gym import FishingObservation
+from src.gym.fishing_env import FishingObservation
 
 
 @dataclass(slots=True)
@@ -110,4 +110,3 @@ class TimeOptimalBangBangPolicy(Policy):
         if abs(accel_if_pressed - desired_acc) <= abs(accel_if_released - desired_acc):
             return 1
         return 0
-

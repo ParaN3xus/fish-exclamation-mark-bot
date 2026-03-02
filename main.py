@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import math
-import time
 from dataclasses import dataclass
 
 from src.control import BaselinePolicy, Policy, TimeOptimalBangBangPolicy
 from src.gym import FishingEnv, FishingEnvConfig
+from src.gym.matplotlib_viewer import render_matplotlib_runs
 
 
 @dataclass(slots=True)
@@ -42,7 +42,7 @@ def parse_difficulties(raw: str) -> list[int]:
     return result
 
 
-def run_episode(env: FishingEnv, policy: Policy, seed: int, difficulty: int, render: bool, render_fps: float) -> tuple[bool, float]:
+def run_episode(env: FishingEnv, policy: Policy, seed: int, difficulty: int) -> tuple[bool, float]:
     obs, _ = env.reset(seed=seed, difficulty=difficulty)
     policy.reset()
 
@@ -51,13 +51,6 @@ def run_episode(env: FishingEnv, policy: Policy, seed: int, difficulty: int, ren
     while not done and not truncated:
         action = policy.act(obs)
         obs, _, done, truncated, _ = env.step(action)
-
-        if render:
-            print("\x1b[2J\x1b[H", end="")
-            print(f"policy={policy.name} difficulty={difficulty}")
-            print(env.render_ascii())
-            if render_fps > 0:
-                time.sleep(1.0 / render_fps)
 
     return env.success, env.total_fight_time
 
@@ -76,7 +69,7 @@ def evaluate_policy(
         episode_time_sum = 0.0
         for ep in range(episodes):
             ep_seed = seed + difficulty * 100_000 + ep
-            success, t = run_episode(env, policy, ep_seed, difficulty, render=False, render_fps=0.0)
+            success, t = run_episode(env, policy, ep_seed, difficulty)
             episode_time_sum += t
             if success:
                 successes += 1
@@ -130,10 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--equipment-expertise", type=int, default=0)
     parser.add_argument("--vr", action="store_true", help="simulate VR modifiers")
 
-    parser.add_argument("--render", action="store_true", help="render one episode in ASCII")
+    parser.add_argument("--render", action="store_true", help="render in matplotlib (supports multiple episodes)")
     parser.add_argument("--render-policy", choices=["bangbang", "baseline"], default="bangbang")
     parser.add_argument("--render-difficulty", type=int, default=5)
-    parser.add_argument("--render-fps", type=float, default=30.0)
+    parser.add_argument("--render-fps", type=float, default=60.0, help="matplotlib update FPS")
+    parser.add_argument("--render-runs", type=int, default=5, help="number of episodes to run in one render session (0=infinite)")
+    parser.add_argument("--render-window-seconds", type=float, default=8.0, help="left-side scrolling curve window in seconds")
     return parser
 
 
@@ -158,15 +153,36 @@ def main() -> None:
     if args.render:
         selected_policy: Policy = bangbang if args.render_policy == "bangbang" else baseline
         difficulty = int(max(1, min(9, args.render_difficulty)))
-        success, t = run_episode(
+        summaries = render_matplotlib_runs(
             env=env,
             policy=selected_policy,
-            seed=args.seed,
+            base_seed=args.seed,
             difficulty=difficulty,
-            render=True,
+            runs=max(0, args.render_runs),
+            window_seconds=args.render_window_seconds,
             render_fps=args.render_fps,
         )
-        print("\nresult:", "SUCCESS" if success else "FAIL", f"time={t:.3f}s")
+        if summaries:
+            total_runs = len(summaries)
+            success_runs = sum(1 for s in summaries if s.success)
+            avg_time = sum(s.total_time for s in summaries) / total_runs
+            avg_success_time = (
+                sum(s.total_time for s in summaries if s.success) / success_runs
+                if success_runs > 0
+                else math.nan
+            )
+            avg_success_text = f"{avg_success_time:.3f}s" if not math.isnan(avg_success_time) else "nan"
+            print(
+                f"render session done: runs={total_runs} success_rate={success_runs / total_runs:.3%} "
+                f"avg_time={avg_time:.3f}s avg_success_time={avg_success_text}"
+            )
+            for s in summaries:
+                print(
+                    f"run={s.run_index} seed={s.seed} result={'SUCCESS' if s.success else 'FAIL'} "
+                    f"time={s.total_time:.3f}s"
+                )
+        else:
+            print("render session done: no episode executed.")
         return
 
     bangbang_results = evaluate_policy(
