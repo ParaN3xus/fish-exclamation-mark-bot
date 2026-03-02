@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import math
+import os
 from dataclasses import dataclass
 
 from src.control import (
@@ -11,7 +13,6 @@ from src.control import (
     TimeOptimalBangBangPolicy,
 )
 from src.gym import FishingEnv, FishingEnvConfig
-from src.gym.matplotlib_viewer import render_matplotlib_runs
 
 
 @dataclass(slots=True)
@@ -22,6 +23,30 @@ class EvalResult:
     success_rate: float
     avg_success_time: float
     avg_episode_time: float
+
+
+@dataclass(slots=True, frozen=True)
+class EvalTask:
+    policy_key: str
+    difficulty: int
+    seed_base: int
+    episode_start: int
+    episode_count: int
+    dt: float
+    max_steps: int
+    equipment_strength: int
+    equipment_expertise: int
+    smoothed_fps: float
+    is_vr: bool
+
+
+@dataclass(slots=True)
+class _EvalAccumulator:
+    policy_name: str
+    episodes: int = 0
+    success_count: int = 0
+    success_time_sum: float = 0.0
+    episode_time_sum: float = 0.0
 
 
 def parse_difficulties(raw: str) -> list[int]:
@@ -70,8 +95,56 @@ def parse_policy_names(raw: str, available: tuple[str, ...]) -> list[str]:
     return names
 
 
+def resolve_eval_workers(raw: int) -> int:
+    if raw < 0:
+        raise ValueError("--eval-workers must be >= 0")
+    if raw > 0:
+        return raw
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count)
+
+
+def build_policy(
+    policy_key: str,
+    *,
+    player_speed: float,
+    gravity: float,
+    equipment_strength: int,
+    equipment_expertise: int,
+    smoothed_fps: float,
+    is_vr: bool,
+) -> Policy:
+    if policy_key == "mpc":
+        return StochasticOutputFeedbackMPCPolicy(
+            player_speed=player_speed,
+            gravity=gravity,
+            equipment_strength=equipment_strength,
+            equipment_expertise=equipment_expertise,
+            smoothed_fps=smoothed_fps,
+            is_vr=is_vr,
+        )
+    if policy_key == "bangbang":
+        return TimeOptimalBangBangPolicy(
+            player_speed=player_speed,
+            gravity=gravity,
+            equipment_strength=equipment_strength,
+            equipment_expertise=equipment_expertise,
+            smoothed_fps=smoothed_fps,
+            is_vr=is_vr,
+        )
+    if policy_key == "baseline":
+        return BaselinePolicy(
+            equipment_strength=equipment_strength,
+            equipment_expertise=equipment_expertise,
+        )
+    raise ValueError(f"unsupported policy key: {policy_key}")
+
+
 def run_episode(
-    env: FishingEnv, policy: Policy, seed: int, difficulty: int
+    env: FishingEnv,
+    policy: Policy,
+    seed: int,
+    difficulty: int,
 ) -> tuple[bool, float]:
     obs, _ = env.reset(seed=seed, difficulty=difficulty)
     policy.reset()
@@ -85,40 +158,173 @@ def run_episode(
     return env.success, env.total_fight_time
 
 
-def evaluate_policy(
-    env: FishingEnv,
-    policy: Policy,
+def run_eval_task(
+    task: EvalTask,
+) -> tuple[str, int, str, int, int, float, float]:
+    config = FishingEnvConfig(
+        dt=task.dt,
+        difficulty=task.difficulty,
+        equipment_strength=task.equipment_strength,
+        equipment_expertise=task.equipment_expertise,
+        is_vr=task.is_vr,
+        smoothed_fps=task.smoothed_fps,
+        max_steps=task.max_steps,
+    )
+    env = FishingEnv(config=config)
+    policy = build_policy(
+        task.policy_key,
+        player_speed=env.player_speed,
+        gravity=env.gravity,
+        equipment_strength=task.equipment_strength,
+        equipment_expertise=task.equipment_expertise,
+        smoothed_fps=task.smoothed_fps,
+        is_vr=task.is_vr,
+    )
+
+    success_count = 0
+    success_time_sum = 0.0
+    episode_time_sum = 0.0
+    for ep in range(task.episode_start, task.episode_start + task.episode_count):
+        ep_seed = task.seed_base + task.difficulty * 100_000 + ep
+        success, total_time = run_episode(
+            env=env,
+            policy=policy,
+            seed=ep_seed,
+            difficulty=task.difficulty,
+        )
+        episode_time_sum += total_time
+        if success:
+            success_count += 1
+            success_time_sum += total_time
+
+    return (
+        task.policy_key,
+        task.difficulty,
+        policy.name,
+        task.episode_count,
+        success_count,
+        success_time_sum,
+        episode_time_sum,
+    )
+
+
+def evaluate_policies(
+    *,
+    policy_keys: list[str],
     difficulties: list[int],
     episodes: int,
     seed: int,
-) -> list[EvalResult]:
-    results: list[EvalResult] = []
-    for difficulty in difficulties:
-        successes = 0
-        success_time_sum = 0.0
-        episode_time_sum = 0.0
-        for ep in range(episodes):
-            ep_seed = seed + difficulty * 100_000 + ep
-            success, t = run_episode(env, policy, ep_seed, difficulty)
-            episode_time_sum += t
-            if success:
-                successes += 1
-                success_time_sum += t
+    dt: float,
+    max_steps: int,
+    equipment_strength: int,
+    equipment_expertise: int,
+    smoothed_fps: float,
+    is_vr: bool,
+    eval_workers: int,
+) -> dict[str, list[EvalResult]]:
+    tasks: list[EvalTask] = []
+    accumulators: dict[tuple[str, int], _EvalAccumulator] = {}
 
-        success_rate = successes / episodes if episodes > 0 else 0.0
-        avg_success_time = success_time_sum / successes if successes > 0 else math.nan
-        avg_episode_time = episode_time_sum / episodes if episodes > 0 else math.nan
-        results.append(
-            EvalResult(
-                policy_name=policy.name,
-                difficulty=difficulty,
-                episodes=episodes,
-                success_rate=success_rate,
-                avg_success_time=avg_success_time,
-                avg_episode_time=avg_episode_time,
+    chunk_size = (
+        episodes
+        if eval_workers <= 1
+        else max(1, episodes // (eval_workers * 2))
+    )
+    for key in policy_keys:
+        for difficulty in difficulties:
+            policy = build_policy(
+                key,
+                player_speed=FishingEnv.player_speed,
+                gravity=FishingEnv.gravity,
+                equipment_strength=equipment_strength,
+                equipment_expertise=equipment_expertise,
+                smoothed_fps=smoothed_fps,
+                is_vr=is_vr,
             )
-        )
-    return results
+            accumulators[(key, difficulty)] = _EvalAccumulator(policy_name=policy.name)
+
+            for start in range(0, episodes, chunk_size):
+                count = min(chunk_size, episodes - start)
+                tasks.append(
+                    EvalTask(
+                        policy_key=key,
+                        difficulty=difficulty,
+                        seed_base=seed,
+                        episode_start=start,
+                        episode_count=count,
+                        dt=dt,
+                        max_steps=max_steps,
+                        equipment_strength=equipment_strength,
+                        equipment_expertise=equipment_expertise,
+                        smoothed_fps=smoothed_fps,
+                        is_vr=is_vr,
+                    )
+                )
+
+    def consume(
+        result: tuple[str, int, str, int, int, float, float],
+    ) -> None:
+        (
+            key,
+            difficulty,
+            policy_name,
+            episode_count,
+            success_count,
+            success_time_sum,
+            episode_time_sum,
+        ) = result
+        acc = accumulators[(key, difficulty)]
+        acc.policy_name = policy_name
+        acc.episodes += episode_count
+        acc.success_count += success_count
+        acc.success_time_sum += success_time_sum
+        acc.episode_time_sum += episode_time_sum
+
+    if eval_workers <= 1:
+        for task in tasks:
+            consume(run_eval_task(task))
+    else:
+        try:
+            with ProcessPoolExecutor(max_workers=eval_workers) as executor:
+                for result in executor.map(run_eval_task, tasks):
+                    consume(result)
+        except (PermissionError, OSError):
+            print(
+                "process pool unavailable in current environment; "
+                "falling back to serial evaluation."
+            )
+            for task in tasks:
+                consume(run_eval_task(task))
+
+    results_by_key: dict[str, list[EvalResult]] = {}
+    for key in policy_keys:
+        results: list[EvalResult] = []
+        for difficulty in difficulties:
+            acc = accumulators[(key, difficulty)]
+            success_rate = acc.success_count / acc.episodes if acc.episodes > 0 else 0.0
+            avg_success_time = (
+                acc.success_time_sum / acc.success_count
+                if acc.success_count > 0
+                else math.nan
+            )
+            avg_episode_time = (
+                acc.episode_time_sum / acc.episodes
+                if acc.episodes > 0
+                else math.nan
+            )
+            results.append(
+                EvalResult(
+                    policy_name=acc.policy_name,
+                    difficulty=difficulty,
+                    episodes=acc.episodes,
+                    success_rate=success_rate,
+                    avg_success_time=avg_success_time,
+                    avg_episode_time=avg_episode_time,
+                )
+            )
+        results_by_key[key] = results
+
+    return results_by_key
 
 
 def print_results_table(
@@ -175,6 +381,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma-separated policies or 'all' (choices: mpc,bangbang,baseline)",
     )
     parser.add_argument(
+        "--eval-workers",
+        type=int,
+        default=0,
+        help="parallel worker processes for evaluation (0=auto, 1=serial)",
+    )
+    parser.add_argument(
         "--dt", type=float, default=1.0 / 60.0, help="simulation step size"
     )
     parser.add_argument(
@@ -223,44 +435,33 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     difficulties = parse_difficulties(args.difficulties)
+    eval_workers = resolve_eval_workers(args.eval_workers)
 
-    config = FishingEnvConfig(
-        dt=args.dt,
-        difficulty=difficulties[0],
-        equipment_strength=args.equipment_strength,
-        equipment_expertise=args.equipment_expertise,
-        is_vr=args.vr,
-        smoothed_fps=args.smoothed_fps,
-        max_steps=args.max_steps,
-    )
-    env = FishingEnv(config=config)
-
-    policy_registry: dict[str, Policy] = {
-        "mpc": StochasticOutputFeedbackMPCPolicy(
-            player_speed=env.player_speed,
-            gravity=env.gravity,
-            equipment_strength=args.equipment_strength,
-            equipment_expertise=args.equipment_expertise,
-            smoothed_fps=args.smoothed_fps,
-            is_vr=args.vr,
-        ),
-        "bangbang": TimeOptimalBangBangPolicy(
-            player_speed=env.player_speed,
-            gravity=env.gravity,
-            equipment_strength=args.equipment_strength,
-            equipment_expertise=args.equipment_expertise,
-            smoothed_fps=args.smoothed_fps,
-            is_vr=args.vr,
-        ),
-        "baseline": BaselinePolicy(
-            equipment_strength=args.equipment_strength,
-            equipment_expertise=args.equipment_expertise,
-        ),
-    }
-    available_policies = tuple(policy_registry.keys())
+    available_policies = ("mpc", "bangbang", "baseline")
+    selected_keys = parse_policy_names(args.policies, available_policies)
 
     if args.render:
-        selected_policy = policy_registry[args.render_policy]
+        from src.gym.matplotlib_viewer import render_matplotlib_runs
+
+        config = FishingEnvConfig(
+            dt=args.dt,
+            difficulty=difficulties[0],
+            equipment_strength=args.equipment_strength,
+            equipment_expertise=args.equipment_expertise,
+            is_vr=args.vr,
+            smoothed_fps=args.smoothed_fps,
+            max_steps=args.max_steps,
+        )
+        env = FishingEnv(config=config)
+        selected_policy = build_policy(
+            args.render_policy,
+            player_speed=env.player_speed,
+            gravity=env.gravity,
+            equipment_strength=args.equipment_strength,
+            equipment_expertise=args.equipment_expertise,
+            smoothed_fps=args.smoothed_fps,
+            is_vr=args.vr,
+        )
         difficulty = int(max(1, min(9, args.render_difficulty)))
         summaries = render_matplotlib_runs(
             env=env,
@@ -301,16 +502,19 @@ def main() -> None:
             print("render session done: no episode executed.")
         return
 
-    selected_keys = parse_policy_names(args.policies, available_policies)
-    results_by_key: dict[str, list[EvalResult]] = {}
-    for key in selected_keys:
-        results_by_key[key] = evaluate_policy(
-            env=env,
-            policy=policy_registry[key],
-            difficulties=difficulties,
-            episodes=args.episodes,
-            seed=args.seed,
-        )
+    results_by_key = evaluate_policies(
+        policy_keys=selected_keys,
+        difficulties=difficulties,
+        episodes=args.episodes,
+        seed=args.seed,
+        dt=args.dt,
+        max_steps=args.max_steps,
+        equipment_strength=args.equipment_strength,
+        equipment_expertise=args.equipment_expertise,
+        smoothed_fps=args.smoothed_fps,
+        is_vr=args.vr,
+        eval_workers=eval_workers,
+    )
 
     print_results_table(results_by_key, selected_keys, difficulties)
 
