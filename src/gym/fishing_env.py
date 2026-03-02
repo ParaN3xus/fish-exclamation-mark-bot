@@ -53,32 +53,32 @@ class FishingEnv:
     """
 
     # Constants mirrored from FishingMinigame.cs
-    bar_height = 400.0
-    fish_target_hitbox_size = 30.0
-    player_speed = 3.0
-    gravity = 1.5
-    vr_target_size_bonus = 0.2
-    vr_lose_speed_multiplier = 0.82
-    fps_assist_max_benefit_fps = 20.0
-    fps_assist_cutoff_fps = 45.0
-    fps_assist_max_bonus = 0.2
-    fps_fish_speed_min_multiplier = 0.6
+    bar_height = 2.8
+    fish_target_hitbox_size = 0.1
+    player_speed = 3.75
+    gravity = 1.25
+    vr_target_size_bonus = 0.04
+    vr_lose_speed_multiplier = 1.0
+    fps_assist_max_benefit_fps = 15.0
+    fps_assist_cutoff_fps = 30.0
+    fps_assist_max_bonus = 0.05
+    fps_fish_speed_min_multiplier = 0.95
     fps_fish_slowdown_start_difficulty = 6
-    fps_fish_vr_slowdown_multiplier = 0.82
-    fps_jump_size_min_multiplier = 0.55
-    fps_direction_time_max_multiplier = 1.35
-    easy_target_size = 120.0
-    hard_target_size = 40.0
-    easy_direction_time = 2.5
-    hard_direction_time = 0.6
-    easy_fish_smooth_time = 0.3
-    hard_fish_smooth_time = 0.05
-    easy_catch_speed = 3.0
-    hard_catch_speed = 1.2
-    easy_lose_speed = 0.8
-    hard_lose_speed = 2.5
-    lose_speed_escalation_rate = 0.15
-    easy_max_lose_speed_multiplier = 1.5
+    fps_fish_vr_slowdown_multiplier = 0.95
+    fps_jump_size_min_multiplier = 0.95
+    fps_direction_time_max_multiplier = 1.0
+    easy_target_size = 1.2
+    hard_target_size = 0.7
+    easy_direction_time = 0.5
+    hard_direction_time = 0.4
+    easy_fish_smooth_time = 1.0
+    hard_fish_smooth_time = 0.19
+    easy_catch_speed = 0.2
+    hard_catch_speed = 0.06
+    easy_lose_speed = 0.1
+    hard_lose_speed = 0.15
+    lose_speed_escalation_rate = 0.1
+    easy_max_lose_speed_multiplier = 1.0
     hard_max_lose_speed_multiplier = 3.0
 
     def __init__(self, config: FishingEnvConfig | None = None) -> None:

@@ -43,10 +43,11 @@ class TimeOptimalBangBangPolicy(Policy):
       a_down = -gravity = -1.5
 
     For the minimum-time transfer (x, v) -> (x_target, 0)
-    with |u| <= a and a_up = -a_down, Pontryagin's
-    Maximum Principle gives a one-switch bang-bang law
-    with switching curve:
-      |e| = v^2 / (2a), where e = x_target - x.
+    with bounded acceleration, Pontryagin's Maximum
+    Principle gives bang-bang control with switching by
+    stopping distance. For asymmetric accelerations we use
+    the direction-dependent braking capability:
+      stop_dist = v_along_target^2 / (2 * a_brake)
 
     Control law used here:
     - accelerate toward target while |e| > v^2/(2a) or moving away from target
@@ -67,12 +68,6 @@ class TimeOptimalBangBangPolicy(Policy):
             raise ValueError(
                 "player_speed must be larger than gravity for controllability."
             )
-        if abs(self.a_up + self.a_down) > 1e-9:
-            raise ValueError(
-                "This policy assumes symmetric accelerations (a_up == -a_down)."
-            )
-
-        self.a_abs = self.a_up
         self._last_player_center: float | None = None
         self._last_dt: float | None = None
         self._v_est = 0.0
@@ -110,17 +105,26 @@ class TimeOptimalBangBangPolicy(Policy):
 
         direction = 1.0 if e >= 0.0 else -1.0
         v_along_target = v * direction
-        stopping_distance = (v * v) / (2.0 * self.a_abs)
+        if direction > 0.0:
+            accel_toward = self.a_up
+            accel_brake = -self.a_down
+        else:
+            accel_toward = -self.a_down
+            accel_brake = self.a_up
+
+        stopping_distance = (v_along_target * v_along_target) / (
+            2.0 * max(accel_brake, self.vel_epsilon)
+        )
 
         should_accelerate_toward_target = (v_along_target < 0.0) or (
             abs(e) > stopping_distance
         )
         if should_accelerate_toward_target:
-            desired_acc = direction * self.a_abs
+            desired_acc = direction * accel_toward
         else:
-            desired_acc = -direction * self.a_abs
+            desired_acc = -direction * accel_brake
 
-        # action=1 gives +a_abs, action=0 gives -a_abs
+        # action=1 gives +a_up, action=0 gives a_down
         accel_if_pressed = self.a_up
         accel_if_released = self.a_down
         if abs(accel_if_pressed - desired_acc) <= abs(accel_if_released - desired_acc):
