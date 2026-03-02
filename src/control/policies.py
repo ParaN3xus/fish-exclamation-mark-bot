@@ -42,8 +42,10 @@ class TimeOptimalBangBangPolicy(Policy):
       a_up = playerSpeed - gravity = 1.5
       a_down = -gravity = -1.5
 
-    For the minimum-time transfer (x, v) -> (x_target, 0) with |u| <= a and a_up = -a_down,
-    Pontryagin's Maximum Principle gives a one-switch bang-bang law with switching curve:
+    For the minimum-time transfer (x, v) -> (x_target, 0)
+    with |u| <= a and a_up = -a_down, Pontryagin's
+    Maximum Principle gives a one-switch bang-bang law
+    with switching curve:
       |e| = v^2 / (2a), where e = x_target - x.
 
     Control law used here:
@@ -51,7 +53,9 @@ class TimeOptimalBangBangPolicy(Policy):
     - otherwise brake to reduce terminal speed
     """
 
-    def __init__(self, player_speed: float = 3.0, gravity: float = 1.5, vel_epsilon: float = 1e-6) -> None:
+    def __init__(
+        self, player_speed: float = 3.0, gravity: float = 1.5, vel_epsilon: float = 1e-6
+    ) -> None:
         super().__init__(name="time_optimal_bangbang")
         self.player_speed = player_speed
         self.gravity = gravity
@@ -60,9 +64,13 @@ class TimeOptimalBangBangPolicy(Policy):
         self.a_up = player_speed - gravity
         self.a_down = -gravity
         if self.a_up <= 0.0:
-            raise ValueError("player_speed must be larger than gravity for controllability.")
+            raise ValueError(
+                "player_speed must be larger than gravity for controllability."
+            )
         if abs(self.a_up + self.a_down) > 1e-9:
-            raise ValueError("This policy assumes symmetric accelerations (a_up == -a_down).")
+            raise ValueError(
+                "This policy assumes symmetric accelerations (a_up == -a_down)."
+            )
 
         self.a_abs = self.a_up
         self._last_player_center: float | None = None
@@ -75,13 +83,19 @@ class TimeOptimalBangBangPolicy(Policy):
         self._v_est = 0.0
 
     def _estimate_velocity(self, obs: FishingObservation) -> float:
-        if self._last_player_center is None or self._last_dt is None or self._last_dt <= 0.0:
+        if (
+            self._last_player_center is None
+            or self._last_dt is None
+            or self._last_dt <= 0.0
+        ):
             self._last_player_center = obs.player_center
             self._last_dt = obs.dt
             self._v_est = 0.0
             return 0.0
 
-        raw_v = (obs.player_center - self._last_player_center) / max(self._last_dt, self.vel_epsilon)
+        raw_v = (obs.player_center - self._last_player_center) / max(
+            self._last_dt, self.vel_epsilon
+        )
         self._v_est = 0.8 * self._v_est + 0.2 * raw_v
         self._last_player_center = obs.player_center
         self._last_dt = obs.dt
@@ -98,7 +112,9 @@ class TimeOptimalBangBangPolicy(Policy):
         v_along_target = v * direction
         stopping_distance = (v * v) / (2.0 * self.a_abs)
 
-        should_accelerate_toward_target = (v_along_target < 0.0) or (abs(e) > stopping_distance)
+        should_accelerate_toward_target = (v_along_target < 0.0) or (
+            abs(e) > stopping_distance
+        )
         if should_accelerate_toward_target:
             desired_acc = direction * self.a_abs
         else:

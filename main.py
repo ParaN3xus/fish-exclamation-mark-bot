@@ -42,7 +42,9 @@ def parse_difficulties(raw: str) -> list[int]:
     return result
 
 
-def run_episode(env: FishingEnv, policy: Policy, seed: int, difficulty: int) -> tuple[bool, float]:
+def run_episode(
+    env: FishingEnv, policy: Policy, seed: int, difficulty: int
+) -> tuple[bool, float]:
     obs, _ = env.reset(seed=seed, difficulty=difficulty)
     policy.reset()
 
@@ -95,40 +97,88 @@ def print_comparison(
     bangbang_results: list[EvalResult],
     baseline_results: list[EvalResult],
 ) -> None:
-    print("difficulty | policy                | success_rate | avg_success_time(s) | avg_episode_time(s)")
-    print("-----------+-----------------------+--------------+---------------------+-------------------")
+    print(
+        "difficulty | policy                | success_rate | "
+        "avg_success_time(s) | avg_episode_time(s)"
+    )
+    print(
+        "-----------+-----------------------+--------------+---------------------+-------------------"
+    )
     lookup_baseline = {r.difficulty: r for r in baseline_results}
     for b in bangbang_results:
         base = lookup_baseline[b.difficulty]
-        b_success_time = "nan" if math.isnan(b.avg_success_time) else f"{b.avg_success_time:7.3f}"
-        base_success_time = "nan" if math.isnan(base.avg_success_time) else f"{base.avg_success_time:7.3f}"
-        print(
-            f"{b.difficulty:9d} | {b.policy_name:21s} | {b.success_rate:10.3%} | {b_success_time:>19s} | {b.avg_episode_time:17.3f}"
+        b_success_time = (
+            "nan" if math.isnan(b.avg_success_time) else f"{b.avg_success_time:7.3f}"
+        )
+        base_success_time = (
+            "nan"
+            if math.isnan(base.avg_success_time)
+            else f"{base.avg_success_time:7.3f}"
         )
         print(
-            f"{'':9s} | {base.policy_name:21s} | {base.success_rate:10.3%} | {base_success_time:>19s} | {base.avg_episode_time:17.3f}"
+            f"{b.difficulty:9d} | {b.policy_name:21s} | {b.success_rate:10.3%} | "
+            f"{b_success_time:>19s} | {b.avg_episode_time:17.3f}"
         )
-        print("-----------+-----------------------+--------------+---------------------+-------------------")
+        print(
+            f"{'':9s} | {base.policy_name:21s} | {base.success_rate:10.3%} | "
+            f"{base_success_time:>19s} | {base.avg_episode_time:17.3f}"
+        )
+        print(
+            "-----------+-----------------------+--------------+---------------------+-------------------"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Fishing minigame gym + control evaluation")
-    parser.add_argument("--episodes", type=int, default=200, help="episodes per difficulty")
-    parser.add_argument("--difficulties", type=str, default="1-9", help="e.g. 1-9 or 1,3,5,7,9")
-    parser.add_argument("--dt", type=float, default=1.0 / 60.0, help="simulation step size")
-    parser.add_argument("--max-steps", type=int, default=7_200, help="max steps per episode")
+    parser = argparse.ArgumentParser(
+        description="Fishing minigame gym + control evaluation"
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=200, help="episodes per difficulty"
+    )
+    parser.add_argument(
+        "--difficulties", type=str, default="1-9", help="e.g. 1-9 or 1,3,5,7,9"
+    )
+    parser.add_argument(
+        "--dt", type=float, default=1.0 / 60.0, help="simulation step size"
+    )
+    parser.add_argument(
+        "--max-steps", type=int, default=7_200, help="max steps per episode"
+    )
     parser.add_argument("--seed", type=int, default=42, help="base random seed")
-    parser.add_argument("--smoothed-fps", type=float, default=60.0, help="use 60 to disable FPS assist effects")
+    parser.add_argument(
+        "--smoothed-fps",
+        type=float,
+        default=60.0,
+        help="use 60 to disable FPS assist effects",
+    )
     parser.add_argument("--equipment-strength", type=int, default=0)
     parser.add_argument("--equipment-expertise", type=int, default=0)
     parser.add_argument("--vr", action="store_true", help="simulate VR modifiers")
 
-    parser.add_argument("--render", action="store_true", help="render in matplotlib (supports multiple episodes)")
-    parser.add_argument("--render-policy", choices=["bangbang", "baseline"], default="bangbang")
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="render in matplotlib (supports multiple episodes)",
+    )
+    parser.add_argument(
+        "--render-policy", choices=["bangbang", "baseline"], default="bangbang"
+    )
     parser.add_argument("--render-difficulty", type=int, default=5)
-    parser.add_argument("--render-fps", type=float, default=60.0, help="matplotlib update FPS")
-    parser.add_argument("--render-runs", type=int, default=5, help="number of episodes to run in one render session (0=infinite)")
-    parser.add_argument("--render-window-seconds", type=float, default=8.0, help="left-side scrolling curve window in seconds")
+    parser.add_argument(
+        "--render-fps", type=float, default=60.0, help="matplotlib update FPS"
+    )
+    parser.add_argument(
+        "--render-runs",
+        type=int,
+        default=5,
+        help="number of episodes to run in one render session (0=infinite)",
+    )
+    parser.add_argument(
+        "--render-window-seconds",
+        type=float,
+        default=8.0,
+        help="left-side scrolling curve window in seconds",
+    )
     return parser
 
 
@@ -147,11 +197,15 @@ def main() -> None:
     )
     env = FishingEnv(config=config)
 
-    bangbang = TimeOptimalBangBangPolicy(player_speed=env.player_speed, gravity=env.gravity)
+    bangbang = TimeOptimalBangBangPolicy(
+        player_speed=env.player_speed, gravity=env.gravity
+    )
     baseline = BaselinePolicy()
 
     if args.render:
-        selected_policy: Policy = bangbang if args.render_policy == "bangbang" else baseline
+        selected_policy: Policy = (
+            bangbang if args.render_policy == "bangbang" else baseline
+        )
         difficulty = int(max(1, min(9, args.render_difficulty)))
         summaries = render_matplotlib_runs(
             env=env,
@@ -171,14 +225,21 @@ def main() -> None:
                 if success_runs > 0
                 else math.nan
             )
-            avg_success_text = f"{avg_success_time:.3f}s" if not math.isnan(avg_success_time) else "nan"
+            avg_success_text = (
+                f"{avg_success_time:.3f}s"
+                if not math.isnan(avg_success_time)
+                else "nan"
+            )
+            success_rate_text = f"{success_runs / total_runs:.3%}"
             print(
-                f"render session done: runs={total_runs} success_rate={success_runs / total_runs:.3%} "
+                f"render session done: runs={total_runs} "
+                f"success_rate={success_rate_text} "
                 f"avg_time={avg_time:.3f}s avg_success_time={avg_success_text}"
             )
             for s in summaries:
+                result_label = "SUCCESS" if s.success else "FAIL"
                 print(
-                    f"run={s.run_index} seed={s.seed} result={'SUCCESS' if s.success else 'FAIL'} "
+                    f"run={s.run_index} seed={s.seed} result={result_label} "
                     f"time={s.total_time:.3f}s"
                 )
         else:

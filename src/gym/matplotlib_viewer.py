@@ -8,9 +8,9 @@ from typing import Any
 from src.control import Policy
 from src.gym.fishing_env import FishingEnv
 
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-from matplotlib.patches import Rectangle
+import matplotlib.pyplot as plt  # pyright: ignore[reportMissingImports]
+from matplotlib.animation import FuncAnimation  # pyright: ignore[reportMissingImports]
+from matplotlib.patches import Rectangle  # pyright: ignore[reportMissingImports]
 
 
 @dataclass(slots=True)
@@ -53,8 +53,8 @@ def render_matplotlib_runs(
     summaries: list[RenderEpisodeSummary] = []
 
     fig = plt.figure(figsize=(12.0, 6.5))
-    curve_ax = fig.add_axes([0.07, 0.12, 0.70, 0.80])
-    strip_ax = fig.add_axes([0.82, 0.12, 0.12, 0.80])
+    curve_ax = fig.add_axes((0.07, 0.12, 0.70, 0.80))
+    strip_ax = fig.add_axes((0.82, 0.12, 0.12, 0.80))
 
     curve_ax.set_ylim(0.0, 1.0)
     curve_ax.set_xlabel("time (s)")
@@ -146,7 +146,8 @@ def render_matplotlib_runs(
         curve_ax.set_xlim(max(0.0, t_now - window_seconds), max(window_seconds, t_now))
 
         progress_text.set_text(
-            f"policy={policy.name}  run={run_idx}/{max_runs if max_runs > 0 else 'inf'}  "
+            f"policy={policy.name}  "
+            f"run={run_idx}/{max_runs if max_runs > 0 else 'inf'}  "
             f"seed={current_seed}\n"
             f"difficulty={difficulty}  progress={env.catch_progress:.3f}  "
             f"time={env.total_fight_time:.3f}s"
@@ -173,7 +174,7 @@ def render_matplotlib_runs(
     def _on_close(_: Any) -> None:
         anim.event_source.stop()
 
-    def animate(_: int) -> tuple[Any, ...]:
+    def animate(_frame: int) -> tuple[Any, ...]:
         nonlocal current_obs, pause_frames
         if pause_frames > 0:
             pause_frames -= 1
@@ -192,7 +193,7 @@ def render_matplotlib_runs(
             )
 
         action = policy.act(current_obs)
-        current_obs, _, done, truncated, _ = env.step(action)
+        current_obs, _reward, done, truncated, _info = env.step(action)
 
         times.append(env.total_fight_time)
         fish_hist.append(env.fish_position)

@@ -109,9 +109,17 @@ class FishingEnv:
 
     @property
     def overlap_threshold(self) -> float:
-        assist_amount = _inverse_lerp(self.fps_assist_cutoff_fps, self.fps_assist_max_benefit_fps, self.config.smoothed_fps)
-        assisted_target_size = self.current_player_target_size * (1.0 + assist_amount * self.fps_assist_max_bonus)
-        return (self.fish_target_hitbox_size + assisted_target_size) / (self.bar_height * 2.0)
+        assist_amount = _inverse_lerp(
+            self.fps_assist_cutoff_fps,
+            self.fps_assist_max_benefit_fps,
+            self.config.smoothed_fps,
+        )
+        assisted_target_size = self.current_player_target_size * (
+            1.0 + assist_amount * self.fps_assist_max_bonus
+        )
+        return (self.fish_target_hitbox_size + assisted_target_size) / (
+            self.bar_height * 2.0
+        )
 
     def set_dt(self, dt: float) -> None:
         self.config.dt = max(1e-6, dt)
@@ -121,31 +129,51 @@ class FishingEnv:
         difficulty_normalized = (float(self.current_difficulty) - 1.0) / 8.0
         difficulty_scale = difficulty_normalized**1.7
 
-        base_target_size = _lerp(self.easy_target_size, self.hard_target_size, difficulty_normalized)
-        clamped_expertise = int(_clamp(float(self.config.equipment_expertise), -100.0, 100.0))
+        base_target_size = _lerp(
+            self.easy_target_size, self.hard_target_size, difficulty_normalized
+        )
+        clamped_expertise = int(
+            _clamp(float(self.config.equipment_expertise), -100.0, 100.0)
+        )
         expertise_effect = (clamped_expertise / 100.0) * difficulty_scale
         expertise_multiplier = max(0.5, 1.0 + expertise_effect)
         self.current_player_target_size = base_target_size * expertise_multiplier
 
-        self.current_direction_change_time = _lerp(self.easy_direction_time, self.hard_direction_time, difficulty_normalized)
-        self.current_catch_progress_speed = _lerp(self.easy_catch_speed, self.hard_catch_speed, difficulty_normalized)
-        self.current_lose_progress_speed = _lerp(self.easy_lose_speed, self.hard_lose_speed, difficulty_normalized)
+        self.current_direction_change_time = _lerp(
+            self.easy_direction_time, self.hard_direction_time, difficulty_normalized
+        )
+        self.current_catch_progress_speed = _lerp(
+            self.easy_catch_speed, self.hard_catch_speed, difficulty_normalized
+        )
+        self.current_lose_progress_speed = _lerp(
+            self.easy_lose_speed, self.hard_lose_speed, difficulty_normalized
+        )
         self.current_max_lose_speed_multiplier = _lerp(
             self.easy_max_lose_speed_multiplier,
             self.hard_max_lose_speed_multiplier,
             difficulty_normalized,
         )
 
-        base_smooth_time = _lerp(self.easy_fish_smooth_time, self.hard_fish_smooth_time, difficulty_normalized)
+        base_smooth_time = _lerp(
+            self.easy_fish_smooth_time,
+            self.hard_fish_smooth_time,
+            difficulty_normalized,
+        )
         base_decay_rate = 1.0 / max(base_smooth_time, 0.001)
-        clamped_strength = int(_clamp(float(self.config.equipment_strength), -100.0, 100.0))
+        clamped_strength = int(
+            _clamp(float(self.config.equipment_strength), -100.0, 100.0)
+        )
         strength_effect = (clamped_strength / 100.0) * difficulty_scale
         strength_multiplier = _clamp(1.0 - strength_effect, 0.1, 10.0)
         self.current_fish_decay_rate = base_decay_rate * strength_multiplier
 
         if self.config.is_vr:
-            self.current_player_target_size = self.current_player_target_size * (1.0 + self.vr_target_size_bonus)
-            self.current_lose_progress_speed = self.current_lose_progress_speed * self.vr_lose_speed_multiplier
+            self.current_player_target_size = self.current_player_target_size * (
+                1.0 + self.vr_target_size_bonus
+            )
+            self.current_lose_progress_speed = (
+                self.current_lose_progress_speed * self.vr_lose_speed_multiplier
+            )
 
     def _observation(self) -> FishingObservation:
         return FishingObservation(
@@ -155,7 +183,9 @@ class FishingEnv:
             difficulty=float(self.current_difficulty),
         )
 
-    def reset(self, *, seed: int | None = None, difficulty: int | None = None) -> tuple[FishingObservation, dict[str, float]]:
+    def reset(
+        self, *, seed: int | None = None, difficulty: int | None = None
+    ) -> tuple[FishingObservation, dict[str, float]]:
         if seed is not None:
             self.rng.seed(seed)
         if difficulty is not None:
@@ -179,7 +209,11 @@ class FishingEnv:
         dt = self.config.dt
         self.fish_direction_timer += dt
 
-        assist_amount = _inverse_lerp(self.fps_assist_cutoff_fps, self.fps_assist_max_benefit_fps, self.config.smoothed_fps)
+        assist_amount = _inverse_lerp(
+            self.fps_assist_cutoff_fps,
+            self.fps_assist_max_benefit_fps,
+            self.config.smoothed_fps,
+        )
         dir_jump_difficulty_factor = 0.0
         if self.current_difficulty >= self.fps_fish_slowdown_start_difficulty:
             dir_jump_difficulty_factor = _clamp01(
@@ -205,10 +239,14 @@ class FishingEnv:
                 target_min_jump = _clamp(self.fps_jump_size_min_multiplier, 0.25, 1.0)
                 jump_mul = _lerp(1.0, target_min_jump, combined_dir_jump_assist)
                 if self.config.is_vr:
-                    jump_mul = jump_mul * _lerp(1.0, self.fps_fish_vr_slowdown_multiplier, assist_amount)
+                    jump_mul = jump_mul * _lerp(
+                        1.0, self.fps_fish_vr_slowdown_multiplier, assist_amount
+                    )
                 max_jump = max_jump * _clamp(jump_mul, 0.05, 1.0)
 
-            clamped_target = _clamp(raw_target, self.fish_position - max_jump, self.fish_position + max_jump)
+            clamped_target = _clamp(
+                raw_target, self.fish_position - max_jump, self.fish_position + max_jump
+            )
             self.fish_target_position = _clamp01(clamped_target)
 
         effective_decay_rate = self.current_fish_decay_rate
@@ -229,7 +267,10 @@ class FishingEnv:
             effective_decay_rate = effective_decay_rate * fps_slow_multiplier
 
         alpha = 1.0 - math.exp(-effective_decay_rate * dt)
-        self.fish_position = _clamp01(self.fish_position + (self.fish_target_position - self.fish_position) * alpha)
+        self.fish_position = _clamp01(
+            self.fish_position
+            + (self.fish_target_position - self.fish_position) * alpha
+        )
 
     def _update_player(self, is_input_pressed: bool) -> None:
         dt = self.config.dt
@@ -250,9 +291,17 @@ class FishingEnv:
             self.catch_progress += self.current_catch_progress_speed * dt
         else:
             grace_period_multiplier = _clamp01((self.total_fight_time - 1.0) / 4.0)
-            escalation_multiplier = 1.0 + self.total_fight_time * self.lose_speed_escalation_rate
-            escalation_multiplier = min(escalation_multiplier, self.current_max_lose_speed_multiplier)
-            modified_lose_speed = self.current_lose_progress_speed * escalation_multiplier * grace_period_multiplier
+            escalation_multiplier = (
+                1.0 + self.total_fight_time * self.lose_speed_escalation_rate
+            )
+            escalation_multiplier = min(
+                escalation_multiplier, self.current_max_lose_speed_multiplier
+            )
+            modified_lose_speed = (
+                self.current_lose_progress_speed
+                * escalation_multiplier
+                * grace_period_multiplier
+            )
             self.catch_progress -= modified_lose_speed * dt
         self.catch_progress = _clamp01(self.catch_progress)
 
@@ -269,9 +318,13 @@ class FishingEnv:
             "current_player_target_size": self.current_player_target_size,
         }
 
-    def step(self, action: int | bool) -> tuple[FishingObservation, float, bool, bool, dict[str, float]]:
+    def step(
+        self, action: int | bool
+    ) -> tuple[FishingObservation, float, bool, bool, dict[str, float]]:
         if self.terminated:
-            raise RuntimeError("Episode already terminated. Call reset() before step().")
+            raise RuntimeError(
+                "Episode already terminated. Call reset() before step()."
+            )
 
         is_input_pressed = bool(action)
         previous_progress = self.catch_progress
