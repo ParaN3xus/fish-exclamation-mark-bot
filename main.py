@@ -202,6 +202,8 @@ def main() -> None:
         gravity=env.gravity,
         equipment_strength=args.equipment_strength,
         equipment_expertise=args.equipment_expertise,
+        smoothed_fps=args.smoothed_fps,
+        is_vr=args.vr,
     )
     baseline = BaselinePolicy(
         equipment_strength=args.equipment_strength,
