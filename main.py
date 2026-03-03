@@ -37,7 +37,6 @@ class EvalTask:
     max_steps: int
     equipment_strength: int
     equipment_expertise: int
-    smoothed_fps: float
     is_vr: bool
 
 
@@ -112,7 +111,6 @@ def build_policy(
     gravity: float,
     equipment_strength: int,
     equipment_expertise: int,
-    smoothed_fps: float,
     is_vr: bool,
 ) -> Policy:
     if policy_key == "mpc":
@@ -121,7 +119,6 @@ def build_policy(
             gravity=gravity,
             equipment_strength=equipment_strength,
             equipment_expertise=equipment_expertise,
-            smoothed_fps=smoothed_fps,
             is_vr=is_vr,
         )
     if policy_key == "bangbang":
@@ -130,7 +127,6 @@ def build_policy(
             gravity=gravity,
             equipment_strength=equipment_strength,
             equipment_expertise=equipment_expertise,
-            smoothed_fps=smoothed_fps,
             is_vr=is_vr,
         )
     if policy_key == "belief":
@@ -139,7 +135,6 @@ def build_policy(
             gravity=gravity,
             equipment_strength=equipment_strength,
             equipment_expertise=equipment_expertise,
-            smoothed_fps=smoothed_fps,
             is_vr=is_vr,
         )
     if policy_key == "baseline":
@@ -177,7 +172,6 @@ def run_eval_task(
         equipment_strength=task.equipment_strength,
         equipment_expertise=task.equipment_expertise,
         is_vr=task.is_vr,
-        smoothed_fps=task.smoothed_fps,
         max_steps=task.max_steps,
     )
     env = FishingEnv(config=config)
@@ -187,7 +181,6 @@ def run_eval_task(
         gravity=env.gravity,
         equipment_strength=task.equipment_strength,
         equipment_expertise=task.equipment_expertise,
-        smoothed_fps=task.smoothed_fps,
         is_vr=task.is_vr,
     )
 
@@ -228,7 +221,6 @@ def evaluate_policies(
     max_steps: int,
     equipment_strength: int,
     equipment_expertise: int,
-    smoothed_fps: float,
     is_vr: bool,
     eval_workers: int,
 ) -> dict[str, list[EvalResult]]:
@@ -248,7 +240,6 @@ def evaluate_policies(
                 gravity=FishingEnv.gravity,
                 equipment_strength=equipment_strength,
                 equipment_expertise=equipment_expertise,
-                smoothed_fps=smoothed_fps,
                 is_vr=is_vr,
             )
             accumulators[(key, difficulty)] = _EvalAccumulator(policy_name=policy.name)
@@ -266,7 +257,6 @@ def evaluate_policies(
                         max_steps=max_steps,
                         equipment_strength=equipment_strength,
                         equipment_expertise=equipment_expertise,
-                        smoothed_fps=smoothed_fps,
                         is_vr=is_vr,
                     )
                 )
@@ -406,12 +396,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-steps", type=int, default=7_200, help="max steps per episode"
     )
     parser.add_argument("--seed", type=int, default=42, help="base random seed")
-    parser.add_argument(
-        "--smoothed-fps",
-        type=float,
-        default=60.0,
-        help="use 60 to disable FPS assist effects",
-    )
     parser.add_argument("--equipment-strength", type=int, default=0)
     parser.add_argument("--equipment-expertise", type=int, default=0)
     parser.add_argument("--vr", action="store_true", help="simulate VR modifiers")
@@ -474,7 +458,6 @@ def main() -> None:
             equipment_strength=args.equipment_strength,
             equipment_expertise=args.equipment_expertise,
             is_vr=args.vr,
-            smoothed_fps=args.smoothed_fps,
             max_steps=args.max_steps,
         )
         env = FishingEnv(config=config)
@@ -484,7 +467,6 @@ def main() -> None:
             gravity=env.gravity,
             equipment_strength=args.equipment_strength,
             equipment_expertise=args.equipment_expertise,
-            smoothed_fps=args.smoothed_fps,
             is_vr=args.vr,
         )
         difficulty = int(max(1, min(9, args.render_difficulty)))
@@ -538,7 +520,6 @@ def main() -> None:
         max_steps=args.max_steps,
         equipment_strength=args.equipment_strength,
         equipment_expertise=args.equipment_expertise,
-        smoothed_fps=args.smoothed_fps,
         is_vr=args.vr,
         eval_workers=eval_workers,
     )

@@ -51,6 +51,8 @@ class TimeOptimalBangBangPolicy(Policy):
         robust_eval_danger_threshold: float = 0.0,
         robust_inner_target_bias_base: float = 0.05252694180391665,
         robust_inner_target_bias_danger_gain: float = 0.13383998114845722,
+        observed_threshold_scale: float = 1.0,
+        observed_threshold_clip_max: float = 0.49,
     ) -> None:
         super().__init__(name="time_optimal_bangbang")
         self.player_speed = player_speed
@@ -114,10 +116,17 @@ class TimeOptimalBangBangPolicy(Policy):
         self.lose_speed_escalation_rate = 0.1
         self.easy_max_lose_speed_multiplier = 1.0
         self.hard_max_lose_speed_multiplier = 3.0
-        self.fps_assist_cutoff_fps = 30.0
-        self.fps_assist_max_benefit_fps = 15.0
-        self.fps_assist_max_bonus = 0.05
         self.vr_target_size_bonus = 0.04
+        self.fish_target_half_size = self.fish_target_hitbox_size / (
+            self.bar_height * 2.0
+        )
+        self.observed_threshold_scale = max(0.0, observed_threshold_scale)
+        self.observed_threshold_clip_max = self._clamp(
+            observed_threshold_clip_max, self.fish_target_half_size, 0.499999
+        )
+        self._use_observed_target_size_signal = (
+            self.__class__ is TimeOptimalBangBangPolicy
+        )
 
         self._last_player_center: float | None = None
         self._last_fish_center: float | None = None
@@ -228,15 +237,31 @@ class TimeOptimalBangBangPolicy(Policy):
         if self.is_vr:
             player_target_size = player_target_size * (1.0 + self.vr_target_size_bonus)
 
-        assist_amount = self._clamp01(
-            (self.smoothed_fps - self.fps_assist_cutoff_fps)
-            / (self.fps_assist_max_benefit_fps - self.fps_assist_cutoff_fps)
-        )
-        assisted_target_size = player_target_size * (
-            1.0 + assist_amount * self.fps_assist_max_bonus
-        )
-        return (self.fish_target_hitbox_size + assisted_target_size) / (
+        return (self.fish_target_hitbox_size + player_target_size) / (
             self.bar_height * 2.0
+        )
+
+    def _effective_overlap_threshold(
+        self,
+        *,
+        obs: FishingObservation,
+        difficulty: float,
+    ) -> float:
+        estimated_threshold = self._overlap_threshold(difficulty)
+        if not self._use_observed_target_size_signal:
+            return estimated_threshold
+
+        observed_player_half = self._clamp(obs.player_target_half_size, 0.0, 0.5)
+        if observed_player_half <= 0.0:
+            return estimated_threshold
+
+        observed_threshold = self.fish_target_half_size + (
+            self.observed_threshold_scale * observed_player_half
+        )
+        return self._clamp(
+            observed_threshold,
+            self.fish_target_half_size,
+            self.observed_threshold_clip_max,
         )
 
     def _lose_speed_at(self, elapsed_time: float, difficulty: float) -> float:
@@ -267,7 +292,7 @@ class TimeOptimalBangBangPolicy(Policy):
         dt = max(obs.dt, self.vel_epsilon)
         self._elapsed_est += dt
         difficulty = self._difficulty_est
-        threshold = self._overlap_threshold(difficulty)
+        threshold = self._effective_overlap_threshold(obs=obs, difficulty=difficulty)
         catching = abs(obs.fish_center - obs.player_center) < threshold
         delta = self._progress_delta(
             catching=catching,
@@ -574,7 +599,7 @@ class TimeOptimalBangBangPolicy(Policy):
 
         dt = max(obs.dt, self.vel_epsilon)
         difficulty = self._difficulty_est
-        threshold = self._overlap_threshold(difficulty)
+        threshold = self._effective_overlap_threshold(obs=obs, difficulty=difficulty)
         error_now = obs.fish_center - obs.player_center
         rel_v = fish_v - player_v
 

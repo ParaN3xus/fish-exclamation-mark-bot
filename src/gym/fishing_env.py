@@ -17,17 +17,12 @@ def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
-def _inverse_lerp(a: float, b: float, value: float) -> float:
-    if a == b:
-        return 0.0
-    return _clamp01((value - a) / (b - a))
-
-
 @dataclass(slots=True, frozen=True)
 class FishingObservation:
     fish_center: float
     player_center: float
     dt: float
+    player_target_half_size: float = 0.0
 
 
 @dataclass(slots=True)
@@ -58,14 +53,6 @@ class FishingEnv:
     gravity = 1.25
     vr_target_size_bonus = 0.04
     vr_lose_speed_multiplier = 1.0
-    fps_assist_max_benefit_fps = 15.0
-    fps_assist_cutoff_fps = 30.0
-    fps_assist_max_bonus = 0.05
-    fps_fish_speed_min_multiplier = 0.95
-    fps_fish_slowdown_start_difficulty = 6
-    fps_fish_vr_slowdown_multiplier = 0.95
-    fps_jump_size_min_multiplier = 0.95
-    fps_direction_time_max_multiplier = 1.0
     easy_target_size = 1.2
     hard_target_size = 0.7
     easy_direction_time = 0.5
@@ -108,15 +95,7 @@ class FishingEnv:
 
     @property
     def overlap_threshold(self) -> float:
-        assist_amount = _inverse_lerp(
-            self.fps_assist_cutoff_fps,
-            self.fps_assist_max_benefit_fps,
-            self.config.smoothed_fps,
-        )
-        assisted_target_size = self.current_player_target_size * (
-            1.0 + assist_amount * self.fps_assist_max_bonus
-        )
-        return (self.fish_target_hitbox_size + assisted_target_size) / (
+        return (self.fish_target_hitbox_size + self.current_player_target_size) / (
             self.bar_height * 2.0
         )
 
@@ -179,6 +158,8 @@ class FishingEnv:
             fish_center=self.fish_position,
             player_center=self.player_position,
             dt=self.config.dt,
+            player_target_half_size=self.current_player_target_size
+            / (self.bar_height * 2.0),
         )
 
     def reset(
@@ -207,25 +188,7 @@ class FishingEnv:
         dt = self.config.dt
         self.fish_direction_timer += dt
 
-        assist_amount = _inverse_lerp(
-            self.fps_assist_cutoff_fps,
-            self.fps_assist_max_benefit_fps,
-            self.config.smoothed_fps,
-        )
-        dir_jump_difficulty_factor = 0.0
-        if self.current_difficulty >= self.fps_fish_slowdown_start_difficulty:
-            dir_jump_difficulty_factor = _clamp01(
-                float(self.current_difficulty - self.fps_fish_slowdown_start_difficulty)
-                / (9.0 - float(self.fps_fish_slowdown_start_difficulty))
-            )
-
-        combined_dir_jump_assist = assist_amount * dir_jump_difficulty_factor
-        effective_direction_change_time = self.current_direction_change_time
-        if combined_dir_jump_assist > 0.0:
-            effective_direction_change_time = effective_direction_change_time * _lerp(
-                1.0, self.fps_direction_time_max_multiplier, combined_dir_jump_assist
-            )
-        effective_direction_change_time = max(1e-6, effective_direction_change_time)
+        effective_direction_change_time = max(1e-6, self.current_direction_change_time)
 
         while self.fish_direction_timer >= effective_direction_change_time:
             self.fish_direction_timer -= effective_direction_change_time
@@ -233,38 +196,12 @@ class FishingEnv:
             difficulty_normalized = (float(self.current_difficulty) - 1.0) / 8.0
             max_jump = _lerp(0.18, 0.3, difficulty_normalized)
 
-            if combined_dir_jump_assist > 0.0:
-                target_min_jump = _clamp(self.fps_jump_size_min_multiplier, 0.25, 1.0)
-                jump_mul = _lerp(1.0, target_min_jump, combined_dir_jump_assist)
-                if self.config.is_vr:
-                    jump_mul = jump_mul * _lerp(
-                        1.0, self.fps_fish_vr_slowdown_multiplier, assist_amount
-                    )
-                max_jump = max_jump * _clamp(jump_mul, 0.05, 1.0)
-
             clamped_target = _clamp(
                 raw_target, self.fish_position - max_jump, self.fish_position + max_jump
             )
             self.fish_target_position = _clamp01(clamped_target)
 
-        effective_decay_rate = self.current_fish_decay_rate
-        difficulty_slow_factor = 0.0
-        if self.current_difficulty >= self.fps_fish_slowdown_start_difficulty:
-            difficulty_slow_factor = _clamp01(
-                float(self.current_difficulty - self.fps_fish_slowdown_start_difficulty)
-                / (9.0 - float(self.fps_fish_slowdown_start_difficulty))
-            )
-        if assist_amount > 0.0 and difficulty_slow_factor > 0.0:
-            target_min = _clamp(self.fps_fish_speed_min_multiplier, 0.01, 1.0)
-            combined = assist_amount * difficulty_slow_factor
-            fps_slow_multiplier = _lerp(1.0, target_min, combined)
-            if self.config.is_vr:
-                fps_slow_multiplier = fps_slow_multiplier * _lerp(
-                    1.0, self.fps_fish_vr_slowdown_multiplier, assist_amount
-                )
-            effective_decay_rate = effective_decay_rate * fps_slow_multiplier
-
-        alpha = 1.0 - math.exp(-effective_decay_rate * dt)
+        alpha = 1.0 - math.exp(-self.current_fish_decay_rate * dt)
         self.fish_position = _clamp01(
             self.fish_position
             + (self.fish_target_position - self.fish_position) * alpha
