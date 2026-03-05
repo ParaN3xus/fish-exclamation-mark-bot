@@ -106,13 +106,22 @@ jobs:
           ldd *.exe | grep -E "ucrt64|mingw" | awk '{print $3}' | xargs -r -I {} cp {} ./
 
       - name: Zip publish folder
+        if: ${{ steps.names.outputs.do_release == 'true' }}
         run: |
           set -euo pipefail
           rm -f release.zip
           cd publish
           zip -r ../release.zip .
 
-      - name: Upload zip artifact
+      - name: Upload publish artifact
+        if: ${{ steps.names.outputs.do_release != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish
+          path: publish
+
+      - name: Upload release zip artifact
+        if: ${{ steps.names.outputs.do_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: release.zip
