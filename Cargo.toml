@@ -4,28 +4,28 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
-crossbeam-channel = "0.5"
-cpal = "0.15"
-eframe = "0.31"
-egui_plot = "0.31"
-hound = "3"
+anyhow = "1.0.102"
+clap = { version = "4.5.60", features = ["derive"] }
+crossbeam-channel = "0.5.15"
+cpal = "0.17.3"
+eframe = "0.33.3"
+egui_plot = "0.34.1"
+hound = "3.5.1"
 
-lewton = "0.10"
-ndarray = "0.16"
-opencv = { version = "0.92", default-features = false, features = ["clang-runtime", "imgproc", "imgcodecs"] }
-ort = { version = "=2.0.0-rc.9", default-features = false, features = ["ndarray", "load-dynamic", "cuda"] }
-ort-sys = "=2.0.0-rc.9"
-rustfft = "6"
-serde = { version = "1", features = ["derive"] }
-toml = "0.9"
-tokio = { version = "1", features = ["rt-multi-thread"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+lewton = "0.10.2"
+ndarray = "0.17.2"
+opencv = { version = "0.98.1", default-features = false, features = ["clang-runtime", "imgproc", "imgcodecs"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["ndarray", "load-dynamic", "cuda", "api-24"] }
+ort-sys = "=2.0.0-rc.12"
+rustfft = "6.4.1"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.0.4"
+tokio = { version = "1.50.0", features = ["rt-multi-thread"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 vrchat_osc = "2.2.0"
-windows-capture = "1"
-windows = { version = "0.61", features = [
+windows-capture = "2.0.0-alpha.7"
+windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Foundation",
     "Win32_System_Threading",

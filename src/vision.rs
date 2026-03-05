@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use opencv::core::{self, CV_8UC4, Mat, Point, Rect, Scalar, Size};
 use opencv::imgproc;
 use opencv::prelude::*;
-use ort::execution_providers::CUDAExecutionProvider;
+use ort::ep::CUDA;
 use ort::session::{Session, builder::GraphOptimizationLevel};
 use ort::value::Tensor;
 use std::path::PathBuf;
@@ -19,17 +19,28 @@ pub struct YoloOrt {
 pub fn init_ort_runtime() -> Result<()> {
     let raw = std::env::var("ORT_DYLIB_PATH")
         .ok()
-        .unwrap_or("./onnxruntime.dll".to_owned());
-    let p = PathBuf::from(raw);
+        .unwrap_or("onnxruntime.dll".to_owned());
+    let raw_path = PathBuf::from(raw);
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let p = if raw_path.is_absolute() {
+        raw_path
+    } else {
+        exe_dir.join(raw_path)
+    };
     if p.is_file() {
         let abs = p.canonicalize().unwrap_or(p);
         info!(path = %abs.display(), "ORT initialized from ORT_DYLIB_PATH");
-        let _ = ort::init_from(abs.to_string_lossy().to_string()).commit()?;
+        let _ = ort::init_from(abs.to_string_lossy().to_string())
+            .map_err(|e| anyhow!("{e}"))?
+            .commit();
         return Ok(());
     }
 
     Err(anyhow!(
-        "onnxruntime.dll not found in local venv; set ORT_DYLIB_PATH to your ONNX Runtime DLL"
+        "onnxruntime.dll not found; set ORT_DYLIB_PATH to an absolute path or exe-dir-relative path"
     ))
 }
 
@@ -39,19 +50,24 @@ impl YoloOrt {
             return Err(anyhow!("model not found: {}", model_path));
         }
 
-        let session = match Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([CUDAExecutionProvider::default().build()])
+        let session = match Session::builder()
+            .map_err(|e| anyhow!("{e}"))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| anyhow!("{e}"))?
+            .with_execution_providers([CUDA::default().build()])
         {
-            Ok(b) => {
+            Ok(mut b) => {
                 info!("trying CUDAExecutionProvider");
-                b.commit_from_file(model_path)?
+                b.commit_from_file(model_path).map_err(|e| anyhow!("{e}"))?
             }
             Err(e) => {
                 warn!(error = %e, "CUDA EP unavailable, fallback to CPU");
-                Session::builder()?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)?
-                    .commit_from_file(model_path)?
+                Session::builder()
+                    .map_err(|e| anyhow!("{e}"))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow!("{e}"))?
+                    .commit_from_file(model_path)
+                    .map_err(|e| anyhow!("{e}"))?
             }
         };
 
@@ -118,13 +134,9 @@ impl YoloOrt {
             vec![1i64, 3, self.imgsz as i64, self.imgsz as i64],
             input,
         ))?;
-        let inputs = ort::inputs![input_tensor]?;
+        let inputs = ort::inputs![input_tensor];
         let outputs = self.session.run(inputs)?;
-        let tensor = outputs[0].try_extract_tensor::<f32>()?;
-        let shape = tensor.shape().to_vec();
-        let Some(data) = tensor.as_slice_memory_order() else {
-            return Ok(None);
-        };
+        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
         if shape.len() != 3 || shape[2] < 12 {
             return Ok(None);
         }
@@ -650,4 +662,3 @@ pub fn mat_bgra_from_bytes(w: i32, h: i32, bgra: &[u8]) -> Result<Mat> {
     m.data_bytes_mut()?.copy_from_slice(bgra);
     Ok(m)
 }
-

@@ -31,6 +31,7 @@ struct CaptureWorker {
     stop: Arc<AtomicBool>,
     min_interval: Duration,
     last_sent: Instant,
+    scratch: Vec<u8>,
 }
 
 impl GraphicsCaptureApiHandler for CaptureWorker {
@@ -43,6 +44,7 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
             stop: ctx.flags.stop,
             min_interval: ctx.flags.min_interval,
             last_sent: Instant::now() - ctx.flags.min_interval,
+            scratch: Vec::new(),
         })
     }
 
@@ -63,8 +65,8 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
 
         let w = frame.width() as i32;
         let h = frame.height() as i32;
-        let mut buf = frame.buffer()?;
-        let raw = buf.as_nopadding_buffer()?;
+        let buf = frame.buffer()?;
+        let raw = buf.as_nopadding_buffer(&mut self.scratch);
         let _ = self.tx.try_send(FramePacket {
             w,
             h,

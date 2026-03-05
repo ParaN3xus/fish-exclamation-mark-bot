@@ -81,10 +81,15 @@ impl AudioCapture {
         let sample_format = supported.sample_format();
         let config: cpal::StreamConfig = supported.config();
         let channels = config.channels as usize;
-        let sample_rate = config.sample_rate.0;
+        let sample_rate = config.sample_rate;
+
+        let device_desc = device
+            .description()
+            .map(|d| d.to_string())
+            .unwrap_or_else(|_| "<unknown>".to_string());
 
         info!(
-            device = %device.name().unwrap_or_else(|_| "<unknown>".to_string()),
+            device = %device_desc,
             sample_rate,
             channels,
             format = ?sample_format,

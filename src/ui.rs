@@ -284,20 +284,24 @@ impl PreviewApp {
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([x_min, 0.0], [x_max, 1.02]));
 
-                plot_ui.line(Line::new(bite_pts).name("bite"));
-                plot_ui.line(Line::new(success_pts).name("success"));
-                plot_ui.line(Line::new(fail_pts).name("fail"));
-                plot_ui.line(Line::new(collected_pts).name("collected"));
+                plot_ui.line(Line::new("bite", bite_pts));
+                plot_ui.line(Line::new("success", success_pts));
+                plot_ui.line(Line::new("fail", fail_pts));
+                plot_ui.line(Line::new("collected", collected_pts));
 
-                plot_ui.hline(HLine::new(self.th_bite).name("th_bite"));
-                plot_ui.hline(HLine::new(self.th_success).name("th_success"));
-                plot_ui.hline(HLine::new(self.th_fail).name("th_fail"));
-                plot_ui.hline(HLine::new(self.th_collected).name("th_collected"));
+                plot_ui.hline(HLine::new("th_bite", self.th_bite));
+                plot_ui.hline(HLine::new("th_success", self.th_success));
+                plot_ui.hline(HLine::new("th_fail", self.th_fail));
+                plot_ui.hline(HLine::new("th_collected", self.th_collected));
 
                 for ev in self.audio_events.iter().filter(|e| e.t >= x_min) {
-                    plot_ui.vline(VLine::new(ev.t).name(format!("{}@{:.2}", ev.label, ev.t)));
+                    plot_ui.vline(VLine::new(format!("{}@{:.2}", ev.label, ev.t), ev.t));
                     let txt = format!("{} {:.2}", ev.label, ev.sim);
-                    plot_ui.text(Text::new(PlotPoint::new(ev.t, 0.98), txt));
+                    plot_ui.text(Text::new(
+                        format!("event_{}_{:.3}", ev.label, ev.t),
+                        PlotPoint::new(ev.t, 0.98),
+                        txt,
+                    ));
                 }
             });
     }
@@ -336,8 +340,8 @@ impl PreviewApp {
             .height(left_rect.height())
             .show(&mut left_ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([x_min, 0.0], [x_max, 1.02]));
-                plot_ui.line(Line::new(fish_pts).name("fish"));
-                plot_ui.line(Line::new(player_pts).name("player"));
+                plot_ui.line(Line::new("fish", fish_pts));
+                plot_ui.line(Line::new("player", player_pts));
             });
 
         let painter = ui.painter_at(right_rect);
