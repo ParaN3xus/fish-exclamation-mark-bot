@@ -573,7 +573,7 @@ pub fn run_ui(
 ) -> Result<()> {
     let _hotkeys = GlobalHotkeys::start(tx_cmd.clone(), stop.clone());
 
-    let window_title = "Rust ORT Tracker";
+    let window_title = "FISH! Bot";
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(window_title)
