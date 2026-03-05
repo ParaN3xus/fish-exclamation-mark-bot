@@ -573,7 +573,7 @@ pub fn run_ui(
 ) -> Result<()> {
     let _hotkeys = GlobalHotkeys::start(tx_cmd.clone(), stop.clone());
 
-    let window_title = "FISH! Bot";
+    let window_title = format!("FISH! Bot v{}", env!("CARGO_PKG_VERSION"));
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(window_title)
