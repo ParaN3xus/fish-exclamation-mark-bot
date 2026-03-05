@@ -85,6 +85,13 @@ jobs:
           mkdir -p publish
           cp target/release/*.exe publish/
 
+      - name: Copy assets into publish
+        run: |
+          set -euo pipefail
+          if [ -d assets ]; then
+            cp -r assets publish/
+          fi
+
       - name: Download ONNX Runtime nuget and copy DLLs
         run: |
           set -euo pipefail
