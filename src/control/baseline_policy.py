@@ -11,13 +11,9 @@ class BaselinePolicy(Policy):
     def __init__(
         self,
         deadzone: float = 0.01,
-        equipment_strength: int = 0,
-        equipment_expertise: int = 0,
     ) -> None:
         super().__init__(name="baseline_chase")
         self.deadzone = deadzone
-        self.equipment_strength = equipment_strength
-        self.equipment_expertise = equipment_expertise
 
     def act(self, obs: FishingObservation) -> int:
         error = obs.fish_center - obs.player_center

@@ -8,10 +8,7 @@ from dataclasses import dataclass
 
 from src.control import (
     BaselinePolicy,
-    BeliefSpaceLocalOptPolicy,
     Policy,
-    StochasticOutputFeedbackMPCPolicy,
-    TimeOptimalBangBangPolicy,
 )
 from src.gym import FishingEnv, FishingEnvConfig
 
@@ -106,42 +103,9 @@ def resolve_eval_workers(raw: int) -> int:
 
 def build_policy(
     policy_key: str,
-    *,
-    player_speed: float,
-    gravity: float,
-    equipment_strength: int,
-    equipment_expertise: int,
-    is_vr: bool,
 ) -> Policy:
-    if policy_key == "mpc":
-        return StochasticOutputFeedbackMPCPolicy(
-            player_speed=player_speed,
-            gravity=gravity,
-            equipment_strength=equipment_strength,
-            equipment_expertise=equipment_expertise,
-            is_vr=is_vr,
-        )
-    if policy_key == "bangbang":
-        return TimeOptimalBangBangPolicy(
-            player_speed=player_speed,
-            gravity=gravity,
-            equipment_strength=equipment_strength,
-            equipment_expertise=equipment_expertise,
-            is_vr=is_vr,
-        )
-    if policy_key == "belief":
-        return BeliefSpaceLocalOptPolicy(
-            player_speed=player_speed,
-            gravity=gravity,
-            equipment_strength=equipment_strength,
-            equipment_expertise=equipment_expertise,
-            is_vr=is_vr,
-        )
     if policy_key == "baseline":
-        return BaselinePolicy(
-            equipment_strength=equipment_strength,
-            equipment_expertise=equipment_expertise,
-        )
+        return BaselinePolicy()
     raise ValueError(f"unsupported policy key: {policy_key}")
 
 
@@ -177,11 +141,6 @@ def run_eval_task(
     env = FishingEnv(config=config)
     policy = build_policy(
         task.policy_key,
-        player_speed=env.player_speed,
-        gravity=env.gravity,
-        equipment_strength=task.equipment_strength,
-        equipment_expertise=task.equipment_expertise,
-        is_vr=task.is_vr,
     )
 
     success_count = 0
@@ -228,19 +187,12 @@ def evaluate_policies(
     accumulators: dict[tuple[str, int], _EvalAccumulator] = {}
 
     chunk_size = (
-        episodes
-        if eval_workers <= 1
-        else max(1, episodes // (eval_workers * 2))
+        episodes if eval_workers <= 1 else max(1, episodes // (eval_workers * 2))
     )
     for key in policy_keys:
         for difficulty in difficulties:
             policy = build_policy(
                 key,
-                player_speed=FishingEnv.player_speed,
-                gravity=FishingEnv.gravity,
-                equipment_strength=equipment_strength,
-                equipment_expertise=equipment_expertise,
-                is_vr=is_vr,
             )
             accumulators[(key, difficulty)] = _EvalAccumulator(policy_name=policy.name)
 
@@ -308,9 +260,7 @@ def evaluate_policies(
                 else math.nan
             )
             avg_episode_time = (
-                acc.episode_time_sum / acc.episodes
-                if acc.episodes > 0
-                else math.nan
+                acc.episode_time_sum / acc.episodes if acc.episodes > 0 else math.nan
             )
             results.append(
                 EvalResult(
@@ -377,11 +327,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policies",
         type=str,
-        default="mpc,bangbang,belief,baseline",
-        help=(
-            "comma-separated policies or 'all' "
-            "(choices: mpc,bangbang,belief,baseline)"
-        ),
+        default="baseline",
+        help=("comma-separated policies or 'all' (choices: baseline)"),
     )
     parser.add_argument(
         "--eval-workers",
@@ -407,8 +354,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--render-policy",
-        choices=["mpc", "bangbang", "belief", "baseline"],
-        default="mpc",
+        choices=["baseline"],
+        default="baseline",
     )
     parser.add_argument("--render-difficulty", type=int, default=5)
     parser.add_argument(
@@ -446,7 +393,7 @@ def main() -> None:
     difficulties = parse_difficulties(args.difficulties)
     eval_workers = resolve_eval_workers(args.eval_workers)
 
-    available_policies = ("mpc", "bangbang", "belief", "baseline")
+    available_policies = ("baseline",)
     selected_keys = parse_policy_names(args.policies, available_policies)
 
     if args.render:
@@ -463,11 +410,6 @@ def main() -> None:
         env = FishingEnv(config=config)
         selected_policy = build_policy(
             args.render_policy,
-            player_speed=env.player_speed,
-            gravity=env.gravity,
-            equipment_strength=args.equipment_strength,
-            equipment_expertise=args.equipment_expertise,
-            is_vr=args.vr,
         )
         difficulty = int(max(1, min(9, args.render_difficulty)))
         summaries = render_matplotlib_runs(
