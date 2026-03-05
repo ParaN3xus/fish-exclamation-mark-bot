@@ -49,16 +49,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${VERSION}" ]; then
-            TAG="v${VERSION}"
-            ARCHIVE="release-${TAG}.zip"
             echo "do_release=true" >> "$GITHUB_OUTPUT"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           else
-            ARCHIVE="release-build-${GITHUB_RUN_NUMBER}.zip"
             echo "do_release=false" >> "$GITHUB_OUTPUT"
             echo "tag=" >> "$GITHUB_OUTPUT"
           fi
-          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
 
       - name: Bump version, tag, and push
         if: ${{ steps.names.outputs.do_release == 'true' }}
@@ -112,20 +108,19 @@ jobs:
       - name: Zip publish folder
         run: |
           set -euo pipefail
-          ARCHIVE="${{ steps.names.outputs.archive }}"
-          rm -f "${ARCHIVE}"
+          rm -f release.zip
           cd publish
-          zip -r "../${ARCHIVE}" .
+          zip -r ../release.zip .
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.names.outputs.archive }}
-          path: ${{ steps.names.outputs.archive }}
+          name: release.zip
+          path: release.zip
 
       - name: Create GitHub release and upload zip
         if: ${{ steps.names.outputs.do_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.names.outputs.tag }}
-          files: ${{ steps.names.outputs.archive }}
+          files: release.zip
