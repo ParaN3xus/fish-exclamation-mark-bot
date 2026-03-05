@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0). Leave empty to skip tag/release."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            base-devel
+            git
+            unzip
+            zip
+            curl
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-opencv
+            mingw-w64-ucrt-x86_64-rust
+
+      - name: Compute release names
+        id: names
+        run: |
+          set -euo pipefail
+          if [ -n "${VERSION}" ]; then
+            TAG="v${VERSION}"
+            ARCHIVE="release-${TAG}.zip"
+            echo "do_release=true" >> "$GITHUB_OUTPUT"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          else
+            ARCHIVE="release-build-${GITHUB_RUN_NUMBER}.zip"
+            echo "do_release=false" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version, tag, and push
+        if: ${{ steps.names.outputs.do_release == 'true' }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.names.outputs.tag }}"
+          sed -i -E "0,/^version = \".*\"/s//version = \"${VERSION}\"/" Cargo.toml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml
+          git commit -m "chore: release ${TAG}" || true
+          git tag -a "${TAG}" -m "${TAG}"
+
+          git push origin HEAD
+          git push origin "${TAG}"
+
+      - name: Build release
+        run: |
+          set -euo pipefail
+          export LIBCLANG_PATH=/ucrt64/bin
+          cargo build --release
+
+      - name: Create publish folder and collect exe
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          cp target/release/*.exe publish/
+
+      - name: Download ONNX Runtime nuget and copy DLLs
+        run: |
+          set -euo pipefail
+          ONNX_VERSION="$(tr -d '[:space:]' < build/onnxruntime.version)"
+          if [ -z "${ONNX_VERSION}" ]; then
+            echo "build/onnxruntime.version is empty"
+            exit 1
+          fi
+          ONNX_NUGET_URL="https://www.nuget.org/api/v2/package/Microsoft.ML.OnnxRuntime/${ONNX_VERSION}"
+          curl -L "${ONNX_NUGET_URL}" -o onnxruntime.nupkg
+          mkdir -p onnxruntime_pkg
+          unzip -q onnxruntime.nupkg -d onnxruntime_pkg
+          cp onnxruntime_pkg/runtimes/win-x64/native/*.dll publish/
+
+      - name: Copy MSYS2 runtime DLL dependencies for exe
+        run: |
+          set -euo pipefail
+          cd publish
+          ldd *.exe | grep -E "ucrt64|mingw" | awk '{print $3}' | xargs -r -I {} cp {} ./
+
+      - name: Zip publish folder
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.names.outputs.archive }}"
+          rm -f "${ARCHIVE}"
+          cd publish
+          zip -r "../${ARCHIVE}" .
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.archive }}
+          path: ${{ steps.names.outputs.archive }}
+
+      - name: Create GitHub release and upload zip
+        if: ${{ steps.names.outputs.do_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.names.outputs.tag }}
+          files: ${{ steps.names.outputs.archive }}
