@@ -323,6 +323,7 @@ pub struct AudioEngine {
     loudness_gain_min: f32,
     loudness_gain_max: f32,
     last_eval_ms: u64,
+    last_total_frames_seen: u64,
     bite_matcher: TemplateMatcher,
     success_matcher: TemplateMatcher,
     fail_matcher: TemplateMatcher,
@@ -330,6 +331,13 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
+    fn clear_similarities(&mut self) {
+        self.bite_matcher.last_similarity = 0.0;
+        self.success_matcher.last_similarity = 0.0;
+        self.fail_matcher.last_similarity = 0.0;
+        self.collected_matcher.last_similarity = 0.0;
+    }
+
     pub fn new(app: &AppConfig, exe_dir: &Path) -> Result<Self> {
         let cfg = &app.audio;
         if cfg.hop == 0 {
@@ -442,6 +450,7 @@ impl AudioEngine {
             loudness_gain_min: cfg.loudness_gain_min,
             loudness_gain_max: cfg.loudness_gain_max,
             last_eval_ms: 0,
+            last_total_frames_seen: 0,
             bite_matcher: TemplateMatcher::new(
                 bite_seq,
                 cfg.bite_threshold,
@@ -495,6 +504,8 @@ impl AudioEngine {
         };
 
         if channels == 0 || samples.is_empty() {
+            self.clear_similarities();
+            self.last_total_frames_seen = total_frames_written;
             return AudioEvents {
                 bite_hit: false,
                 success_hit: false,
@@ -507,8 +518,42 @@ impl AudioEngine {
             };
         }
 
+        if total_frames_written == self.last_total_frames_seen {
+            self.clear_similarities();
+            return AudioEvents {
+                bite_hit: false,
+                success_hit: false,
+                fail_hit: false,
+                collected_hit: false,
+                bite_similarity: self.bite_matcher.last_similarity,
+                success_similarity: self.success_matcher.last_similarity,
+                fail_similarity: self.fail_matcher.last_similarity,
+                collected_similarity: self.collected_matcher.last_similarity,
+            };
+        }
+        self.last_total_frames_seen = total_frames_written;
+
         let mono_raw = interleaved_to_mono(&samples, channels);
         let energy = frame_energy(&mono_raw);
+        let min_energy = self
+            .bite_matcher
+            .min_energy
+            .min(self.success_matcher.min_energy)
+            .min(self.fail_matcher.min_energy)
+            .min(self.collected_matcher.min_energy);
+        if energy < min_energy {
+            self.clear_similarities();
+            return AudioEvents {
+                bite_hit: false,
+                success_hit: false,
+                fail_hit: false,
+                collected_hit: false,
+                bite_similarity: self.bite_matcher.last_similarity,
+                success_similarity: self.success_matcher.last_similarity,
+                fail_similarity: self.fail_matcher.last_similarity,
+                collected_similarity: self.collected_matcher.last_similarity,
+            };
+        }
         let mono = loudness_match(
             &mono_raw,
             self.loudness_target_rms,
