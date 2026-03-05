@@ -56,28 +56,33 @@ jobs:
             echo "tag=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bump version, tag, and push
+      - name: Bump version
         if: ${{ steps.names.outputs.do_release == 'true' }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.names.outputs.tag }}"
           sed -i -E "0,/^version = \".*\"/s//version = \"${VERSION}\"/" Cargo.toml
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add Cargo.toml
-          git commit -m "build: bump version to ${TAG}" || true
-          git tag -a "${TAG}" -m "${TAG}"
-
-          git push origin HEAD
-          git push origin "${TAG}"
 
       - name: Build release
         run: |
           set -euo pipefail
           export LIBCLANG_PATH=/ucrt64/bin
           cargo build --release
+
+      - name: Commit, tag, and push
+        if: ${{ steps.names.outputs.do_release == 'true' }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.names.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml Cargo.lock
+          git commit -m "build: bump version to ${TAG}" || true
+          git tag -a "${TAG}" -m "${TAG}"
+
+          git push origin HEAD
+          git push origin "${TAG}"
 
       - name: Create publish folder and collect exe
         run: |
