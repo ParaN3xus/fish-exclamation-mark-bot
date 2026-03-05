@@ -38,6 +38,8 @@ jobs:
             unzip
             zip
             curl
+            pkgconf
+            mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-opencv
             mingw-w64-ucrt-x86_64-rust
