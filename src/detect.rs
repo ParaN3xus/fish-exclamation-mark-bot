@@ -334,6 +334,8 @@ pub fn run_detect(
     let mut bite_or_error_last_yolo_seq: u64 = 0;
     let mut fishing_periodic_pending: bool = false;
     let mut fishing_periodic_last_eval_seq: u64 = 0;
+    let mut fishing_periodic_miss_once: bool = false;
+    let mut fishing_periodic_retry_after: Option<Instant> = None;
 
     let mut last_det_tick = Instant::now();
     let mut last_cap_tick = Instant::now();
@@ -447,6 +449,8 @@ pub fn run_detect(
                     last_obs_tick = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -469,6 +473,8 @@ pub fn run_detect(
                     last_obs_tick = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -492,6 +498,8 @@ pub fn run_detect(
                         last_obs_tick = None;
                         last_fishing_detect_at = None;
                         fishing_periodic_pending = false;
+                        fishing_periodic_miss_once = false;
+                        fishing_periodic_retry_after = None;
                         bot_state = BotState::Stopped;
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
@@ -528,6 +536,8 @@ pub fn run_detect(
                     last_fishing_yolo_check_at = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -574,6 +584,8 @@ pub fn run_detect(
                         last_fishing_yolo_check_at = None;
                         last_fishing_detect_at = None;
                         fishing_periodic_pending = false;
+                        fishing_periodic_miss_once = false;
+                        fishing_periodic_retry_after = None;
                         bite_or_error_last_yolo_seq = yolo_latest_seq;
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
@@ -674,37 +686,63 @@ pub fn run_detect(
                         last_fishing_yolo_check_at = None;
                         last_fishing_detect_at = None;
                         fishing_periodic_pending = false;
+                        fishing_periodic_miss_once = false;
+                        fishing_periodic_retry_after = None;
                     }
 
-                    let should_check_yolo = match last_fishing_yolo_check_at {
-                        None => true,
-                        Some(t) => {
-                            now.duration_since(t).as_millis() >= u128::from(cfg.state_machine.fishing_yolo_check_ms)
+                    let should_check_yolo = if fishing_periodic_miss_once {
+                        match fishing_periodic_retry_after {
+                            Some(t) => now >= t,
+                            None => true,
+                        }
+                    } else {
+                        match last_fishing_yolo_check_at {
+                            None => true,
+                            Some(t) => {
+                                now.duration_since(t).as_millis()
+                                    >= u128::from(cfg.state_machine.fishing_yolo_check_ms)
+                            }
                         }
                     };
                     if should_check_yolo {
                         last_fishing_yolo_check_at = Some(now);
+                        if fishing_periodic_miss_once {
+                            fishing_periodic_retry_after = None;
+                        }
                         fishing_periodic_pending = true;
                     }
                     if fishing_periodic_pending && yolo_latest_seq != fishing_periodic_last_eval_seq {
                         fishing_periodic_last_eval_seq = yolo_latest_seq;
                         fishing_periodic_pending = false;
                         if yolo_latest_det.is_none() {
-                            if press {
-                                if let Some(clicker) = clicker.as_mut() {
-                                    safe_set_press(clicker, false);
+                            if !fishing_periodic_miss_once {
+                                fishing_periodic_miss_once = true;
+                                // Retry once after 0.1s to avoid same-frame false miss exits.
+                                fishing_periodic_retry_after =
+                                    Some(now + Duration::from_millis(100));
+                                fishing_periodic_pending = false;
+                            } else {
+                                fishing_periodic_miss_once = false;
+                                fishing_periodic_retry_after = None;
+                                if press {
+                                    if let Some(clicker) = clicker.as_mut() {
+                                        safe_set_press(clicker, false);
+                                    }
+                                    press = false;
                                 }
-                                press = false;
+                                bot_state = BotState::CollectFish;
+                                log_transition(
+                                    BotState::Fishing,
+                                    bot_state,
+                                    "fishing periodic yolo miss x2",
+                                    &mut status_text,
+                                    &mut state_entered_at,
+                                );
+                                continue;
                             }
-                            bot_state = BotState::CollectFish;
-                            log_transition(
-                                BotState::Fishing,
-                                bot_state,
-                                "fishing periodic yolo miss",
-                                &mut status_text,
-                                &mut state_entered_at,
-                            );
-                            continue;
+                        } else {
+                            fishing_periodic_miss_once = false;
+                            fishing_periodic_retry_after = None;
                         }
                     }
                     let detect_fps = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
@@ -922,6 +960,8 @@ pub fn run_detect(
                     last_fishing_yolo_check_at = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
 
                     if now
                         .duration_since(state_entered_at.unwrap_or(now))
@@ -951,6 +991,8 @@ pub fn run_detect(
                     last_fishing_yolo_check_at = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
                     if now
                         .duration_since(state_entered_at.unwrap_or(now))
                         .as_millis()
@@ -974,6 +1016,8 @@ pub fn run_detect(
                     last_fishing_yolo_check_at = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
+                    fishing_periodic_miss_once = false;
+                    fishing_periodic_retry_after = None;
                 }
             }
         }
