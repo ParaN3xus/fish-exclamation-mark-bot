@@ -13,8 +13,8 @@ use tracing::{error, info, warn};
 use crate::audio::AudioEngine;
 use crate::config::AppConfig;
 use crate::control::VrchatClicker;
+use crate::filter::ObservationFilter;
 use crate::policy::{FishingObservation, TimeOptimalBangBangPolicy};
-use crate::sampler::PolicyActionSampler;
 use crate::types::{BBox, BotState, DetectCommand, DetectPacket, FramePacket, Kp, TrackState};
 use crate::vision::{
     YoloOrt, clip_box, detect_bright_fish_strategy, mat_bgra_from_bytes, roi_from_outer_and_kp,
@@ -319,7 +319,8 @@ pub fn run_detect(
         BotState::WaitingFish
     };
     let mut track_state: Option<TrackState> = None;
-    let mut sampler: Option<PolicyActionSampler> = None;
+    let mut policy: Option<TimeOptimalBangBangPolicy> = None;
+    let mut obs_filter: Option<ObservationFilter> = None;
     let mut first_det_at: Option<Instant> = None;
     let mut state_entered_at: Option<Instant> = None;
     let mut last_obs_tick: Option<Instant> = None;
@@ -441,7 +442,8 @@ pub fn run_detect(
                     first_det_at = None;
                     state_entered_at = None;
                     track_state = None;
-                    sampler = None;
+                    policy = None;
+                    obs_filter = None;
                     last_obs_tick = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
@@ -462,7 +464,8 @@ pub fn run_detect(
                     bot_state = BotState::BiteOrError;
                     first_det_at = None;
                     state_entered_at = None;
-                    sampler = None;
+                    policy = None;
+                    obs_filter = None;
                     last_obs_tick = None;
                     last_fishing_detect_at = None;
                     fishing_periodic_pending = false;
@@ -484,7 +487,8 @@ pub fn run_detect(
                         first_det_at = None;
                         state_entered_at = None;
                         track_state = None;
-                        sampler = None;
+                        policy = None;
+                        obs_filter = None;
                         last_obs_tick = None;
                         last_fishing_detect_at = None;
                         fishing_periodic_pending = false;
@@ -518,7 +522,8 @@ pub fn run_detect(
                     }
                     first_det_at = None;
                     track_state = None;
-                    sampler = None;
+                    policy = None;
+                    obs_filter = None;
                     last_obs_tick = None;
                     last_fishing_yolo_check_at = None;
                     last_fishing_detect_at = None;
@@ -627,7 +632,8 @@ pub fn run_detect(
                                         y: (f.y + f.h / 2) as f32,
                                     });
                                 }
-                                sampler = None;
+                                policy = None;
+                                obs_filter = None;
                                 last_obs_tick = None;
                                 bot_state = BotState::Fishing;
                                 log_transition(
@@ -787,31 +793,30 @@ pub fn run_detect(
                                 player_target_half_size,
                             };
 
-                            let action = if let Some(s) = sampler.as_mut() {
-                                s.observe(obs_raw)
+                            let filtered = if let Some(f) = obs_filter.as_mut() {
+                                f.apply(obs_raw)
                             } else {
-                                let mut s = PolicyActionSampler::new_with_completion(
-                                    TimeOptimalBangBangPolicy::from_config(&cfg.policy),
-                                    cfg.sampler.clone(),
-                                    cfg.completion.clone(),
-                                );
-                                let a = s.reset(obs_raw);
-                                sampler = Some(s);
-                                a
+                                let mut f = ObservationFilter::new(cfg.filter.clone());
+                                let init = f.reset(obs_raw);
+                                obs_filter = Some(f);
+                                init
                             };
 
-                            if let Some(s) = sampler.as_ref()
-                                && let Some(filtered) = s.last_filtered_observation()
-                            {
-                                policy_fish_center = Some(filtered.fish_center);
-                                policy_player_center = Some(filtered.player_center);
-                                policy_target_half = Some(filtered.player_target_half_size);
-                                let overlap_like = 1.0
-                                    - ((filtered.fish_center - filtered.player_center).abs()
-                                        / filtered.player_target_half_size.max(1e-4))
-                                    .clamp(0.0, 1.0);
-                                policy_progress = Some(overlap_like);
-                            }
+                            let action = {
+                                let p = policy.get_or_insert_with(|| {
+                                    TimeOptimalBangBangPolicy::from_config(&cfg.policy)
+                                });
+                                p.act(filtered)
+                            };
+
+                            policy_fish_center = Some(filtered.fish_center);
+                            policy_player_center = Some(filtered.player_center);
+                            policy_target_half = Some(filtered.player_target_half_size);
+                            let overlap_like = 1.0
+                                - ((filtered.fish_center - filtered.player_center).abs()
+                                    / filtered.player_target_half_size.max(1e-4))
+                                .clamp(0.0, 1.0);
+                            policy_progress = Some(overlap_like);
 
                             let next_press = action == 1;
                             if next_press != press {

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::filter::FilterConfig;
 use crate::policy::PolicyConfig;
-use crate::sampler::{ObservationCompletionConfig, SamplerConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -18,8 +18,7 @@ pub struct AppConfig {
     pub vision: VisionConfig,
     pub audio: AudioConfig,
     pub control: ControlConfig,
-    pub sampler: SamplerConfig,
-    pub completion: ObservationCompletionConfig,
+    pub filter: FilterConfig,
     pub policy: PolicyConfig,
 }
 
@@ -34,8 +33,7 @@ impl Default for AppConfig {
             vision: VisionConfig::default(),
             audio: AudioConfig::default(),
             control: ControlConfig::default(),
-            sampler: SamplerConfig::default(),
-            completion: ObservationCompletionConfig::default(),
+            filter: FilterConfig::default(),
             policy: PolicyConfig::default(),
         }
     }
