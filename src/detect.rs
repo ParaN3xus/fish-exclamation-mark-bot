@@ -334,6 +334,7 @@ pub fn run_detect(
     let mut bite_or_error_last_yolo_seq: u64 = 0;
     let mut fishing_periodic_pending: bool = false;
     let mut fishing_periodic_last_eval_seq: u64 = 0;
+    let mut fishing_periodic_miss_once: bool = false;
 
     let mut last_det_tick = Instant::now();
     let mut last_cap_tick = Instant::now();
@@ -674,6 +675,7 @@ pub fn run_detect(
                         last_fishing_yolo_check_at = None;
                         last_fishing_detect_at = None;
                         fishing_periodic_pending = false;
+                        fishing_periodic_miss_once = false;
                     }
 
                     let should_check_yolo = match last_fishing_yolo_check_at {
@@ -690,21 +692,31 @@ pub fn run_detect(
                         fishing_periodic_last_eval_seq = yolo_latest_seq;
                         fishing_periodic_pending = false;
                         if yolo_latest_det.is_none() {
-                            if press {
-                                if let Some(clicker) = clicker.as_mut() {
-                                    safe_set_press(clicker, false);
+                            if !fishing_periodic_miss_once {
+                                fishing_periodic_miss_once = true;
+                                // Immediate retry once to reduce false exits on one-frame YOLO miss.
+                                last_fishing_yolo_check_at = Some(now);
+                                fishing_periodic_pending = true;
+                            } else {
+                                fishing_periodic_miss_once = false;
+                                if press {
+                                    if let Some(clicker) = clicker.as_mut() {
+                                        safe_set_press(clicker, false);
+                                    }
+                                    press = false;
                                 }
-                                press = false;
+                                bot_state = BotState::CollectFish;
+                                log_transition(
+                                    BotState::Fishing,
+                                    bot_state,
+                                    "fishing periodic yolo miss x2",
+                                    &mut status_text,
+                                    &mut state_entered_at,
+                                );
+                                continue;
                             }
-                            bot_state = BotState::CollectFish;
-                            log_transition(
-                                BotState::Fishing,
-                                bot_state,
-                                "fishing periodic yolo miss",
-                                &mut status_text,
-                                &mut state_entered_at,
-                            );
-                            continue;
+                        } else {
+                            fishing_periodic_miss_once = false;
                         }
                     }
                     let detect_fps = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
