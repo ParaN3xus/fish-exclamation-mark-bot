@@ -8,7 +8,10 @@ from dataclasses import dataclass
 
 from src.control import (
     BaselinePolicy,
+    BeliefSpaceLocalOptPolicy,
     Policy,
+    StochasticOutputFeedbackMPCPolicy,
+    TimeOptimalBangBangPolicy,
 )
 from src.gym import FishingEnv, FishingEnvConfig
 
@@ -104,6 +107,12 @@ def resolve_eval_workers(raw: int) -> int:
 def build_policy(
     policy_key: str,
 ) -> Policy:
+    if policy_key == "mpc":
+        return StochasticOutputFeedbackMPCPolicy()
+    if policy_key == "bangbang":
+        return TimeOptimalBangBangPolicy()
+    if policy_key == "belief":
+        return BeliefSpaceLocalOptPolicy()
     if policy_key == "baseline":
         return BaselinePolicy()
     raise ValueError(f"unsupported policy key: {policy_key}")
@@ -328,7 +337,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--policies",
         type=str,
         default="baseline",
-        help=("comma-separated policies or 'all' (choices: baseline)"),
+        help=(
+            "comma-separated policies or 'all' "
+            "(choices: baseline,bangbang,belief,mpc)"
+        ),
     )
     parser.add_argument(
         "--eval-workers",
@@ -354,7 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--render-policy",
-        choices=["baseline"],
+        choices=["baseline", "bangbang", "belief", "mpc"],
         default="baseline",
     )
     parser.add_argument("--render-difficulty", type=int, default=5)
@@ -393,7 +405,7 @@ def main() -> None:
     difficulties = parse_difficulties(args.difficulties)
     eval_workers = resolve_eval_workers(args.eval_workers)
 
-    available_policies = ("baseline",)
+    available_policies = ("baseline", "bangbang", "belief", "mpc")
     selected_keys = parse_policy_names(args.policies, available_policies)
 
     if args.render:
