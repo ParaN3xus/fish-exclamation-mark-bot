@@ -576,8 +576,8 @@ pub fn run_ui(
     let window_title = format!("FISH! Bot v{}", env!("CARGO_PKG_VERSION"));
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(window_title)
-            .with_inner_size([1280.0, 760.0]),
+            .with_title(window_title.clone())
+            .with_inner_size([800.0, 500.0]),
         ..Default::default()
     };
 
