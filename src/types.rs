@@ -1,8 +1,11 @@
+use std::time::Instant;
+
 #[derive(Clone)]
 pub struct FramePacket {
     pub w: i32,
     pub h: i32,
     pub bgra: Vec<u8>,
+    pub captured_at: Instant,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +70,7 @@ pub struct DetectPacket {
     pub policy_target_half: Option<f32>,
     pub fps_cap: f32,
     pub fps_det: f32,
+    pub cap_to_policy_ms: f32,
 }
 
 #[derive(Clone)]

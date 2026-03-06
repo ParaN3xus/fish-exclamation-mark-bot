@@ -1117,6 +1117,7 @@ pub fn run_detect(
                 .duration_since(last_det_tick)
                 .as_secs_f32()
                 .max(1e-6);
+        let cap_to_policy_ms = det_now.duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
         last_det_tick = det_now;
 
         let bytes = bgr.data_bytes()?.to_vec();
@@ -1142,6 +1143,7 @@ pub fn run_detect(
             policy_target_half,
             fps_cap,
             fps_det,
+            cap_to_policy_ms,
         });
 
         thread::sleep(Duration::from_millis(cfg.loop_timing.detect_sleep_ms));

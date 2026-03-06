@@ -158,11 +158,12 @@ impl PreviewApp {
 
         self.latest_t = pkt.t_sec;
         self.status_text = format!(
-            "state={:?} press={} cap_fps={:.1} det_fps={:.1} bite_sim={:.2} success_sim={:.2} fail_sim={:.2} collected_sim={:.2}",
+            "state={:?} press={} cap_fps={:.1} det_fps={:.1} cap_to_policy={:.1}ms bite_sim={:.2} success_sim={:.2} fail_sim={:.2} collected_sim={:.2}",
             pkt.state,
             pkt.press as i32,
             pkt.fps_cap,
             pkt.fps_det,
+            pkt.cap_to_policy_ms,
             pkt.bite_similarity,
             pkt.success_similarity,
             pkt.fail_similarity,

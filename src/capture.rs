@@ -71,6 +71,7 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
             w,
             h,
             bgra: raw.to_vec(),
+            captured_at: Instant::now(),
         });
         Ok(())
     }
