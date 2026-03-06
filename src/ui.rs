@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
-use egui_plot::{HLine, Legend, Line, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
+use egui_plot::{HLine, Legend, Line, LineStyle, Plot, PlotBounds, PlotPoint, PlotPoints, Text, VLine};
 use tracing::{info, warn};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -23,7 +23,8 @@ use crate::types::{BotState, DetectCommand, DetectPacket};
 
 const AUDIO_WINDOW_SEC: f64 = 8.0;
 const POLICY_WINDOW_SEC: f64 = 8.0;
-const MAX_HISTORY_SEC: f64 = 30.0;
+const MAX_HISTORY_SEC: f64 = 60.0;
+const PLOT_PAN_STEP_SEC: f64 = 1.0;
 const REPAINT_MS: u64 = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -69,6 +70,10 @@ struct PreviewApp {
     policy_history: VecDeque<PolicySample>,
     last_policy_sample: Option<PolicySample>,
     latest_t: f64,
+    audio_follow_latest: bool,
+    audio_view_end_t: f64,
+    policy_follow_latest: bool,
+    policy_view_end_t: f64,
     th_bite: f64,
     th_success: f64,
     th_fail: f64,
@@ -97,6 +102,10 @@ impl PreviewApp {
             policy_history: VecDeque::new(),
             last_policy_sample: None,
             latest_t: 0.0,
+            audio_follow_latest: true,
+            audio_view_end_t: AUDIO_WINDOW_SEC,
+            policy_follow_latest: true,
+            policy_view_end_t: POLICY_WINDOW_SEC,
             th_bite: cfg.audio.bite_threshold as f64,
             th_success: cfg.audio.success_threshold as f64,
             th_fail: cfg.audio.fail_threshold as f64,
@@ -266,8 +275,36 @@ impl PreviewApp {
     }
 
     fn draw_audio_tab(&mut self, ui: &mut egui::Ui) {
-        let x_max = self.latest_t.max(AUDIO_WINDOW_SEC);
+        let latest_x_max = self.latest_t.max(AUDIO_WINDOW_SEC);
+        if self.audio_follow_latest {
+            self.audio_view_end_t = latest_x_max;
+        } else {
+            self.audio_view_end_t = self.audio_view_end_t.clamp(AUDIO_WINDOW_SEC, latest_x_max);
+        }
+        let x_max = self.audio_view_end_t;
         let x_min = (x_max - AUDIO_WINDOW_SEC).max(0.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("<< 1s").clicked() {
+                self.audio_follow_latest = false;
+                self.audio_view_end_t =
+                    (self.audio_view_end_t - PLOT_PAN_STEP_SEC).max(AUDIO_WINDOW_SEC);
+            }
+            if ui.button("1s >>").clicked() {
+                self.audio_follow_latest = false;
+                self.audio_view_end_t =
+                    (self.audio_view_end_t + PLOT_PAN_STEP_SEC).min(latest_x_max);
+            }
+            if ui.button("Sync Latest").clicked() {
+                self.audio_follow_latest = true;
+                self.audio_view_end_t = latest_x_max;
+            }
+            ui.label(if self.audio_follow_latest {
+                "mode: follow latest"
+            } else {
+                "mode: manual"
+            });
+        });
 
         let bite_pts = PlotPoints::from_iter(self.audio_history.iter().map(|s| [s.t, s.bite]));
         let success_pts =
@@ -276,23 +313,40 @@ impl PreviewApp {
         let collected_pts =
             PlotPoints::from_iter(self.audio_history.iter().map(|s| [s.t, s.collected]));
 
-        Plot::new("audio_debug_plot")
+        let plot_resp = Plot::new("audio_debug_plot")
             .legend(Legend::default())
-            .allow_scroll(false)
+            .allow_drag([true, false])
+            .allow_scroll([true, false])
             .allow_zoom(false)
-            .height(ui.available_height())
+            .height((ui.available_height() - 28.0).max(120.0))
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([x_min, 0.0], [x_max, 1.02]));
 
-                plot_ui.line(Line::new("bite", bite_pts));
-                plot_ui.line(Line::new("success", success_pts));
-                plot_ui.line(Line::new("fail", fail_pts));
-                plot_ui.line(Line::new("collected", collected_pts));
+                plot_ui.line(Line::new("bite", bite_pts).width(2.4));
+                plot_ui.line(Line::new("success", success_pts).width(2.4));
+                plot_ui.line(Line::new("fail", fail_pts).width(2.4));
+                plot_ui.line(Line::new("collected", collected_pts).width(2.4));
 
-                plot_ui.hline(HLine::new("th_bite", self.th_bite));
-                plot_ui.hline(HLine::new("th_success", self.th_success));
-                plot_ui.hline(HLine::new("th_fail", self.th_fail));
-                plot_ui.hline(HLine::new("th_collected", self.th_collected));
+                plot_ui.hline(
+                    HLine::new("th_bite", self.th_bite)
+                        .width(2.0)
+                        .style(LineStyle::Dashed { length: 8.0 }),
+                );
+                plot_ui.hline(
+                    HLine::new("th_success", self.th_success)
+                        .width(2.0)
+                        .style(LineStyle::Dashed { length: 8.0 }),
+                );
+                plot_ui.hline(
+                    HLine::new("th_fail", self.th_fail)
+                        .width(2.0)
+                        .style(LineStyle::Dashed { length: 8.0 }),
+                );
+                plot_ui.hline(
+                    HLine::new("th_collected", self.th_collected)
+                        .width(2.0)
+                        .style(LineStyle::Dashed { length: 8.0 }),
+                );
 
                 for ev in self.audio_events.iter().filter(|e| e.t >= x_min) {
                     plot_ui.vline(VLine::new(format!("{}@{:.2}", ev.label, ev.t), ev.t));
@@ -304,11 +358,46 @@ impl PreviewApp {
                     ));
                 }
             });
+
+        let b = plot_resp.transform.bounds();
+        let new_end = b.max()[0].max(AUDIO_WINDOW_SEC).min(latest_x_max);
+        if (new_end - x_max).abs() > 1e-4 {
+            self.audio_follow_latest = false;
+            self.audio_view_end_t = new_end;
+        }
     }
 
     fn draw_policy_tab(&mut self, ui: &mut egui::Ui) {
-        let x_max = self.latest_t.max(POLICY_WINDOW_SEC);
+        let latest_x_max = self.latest_t.max(POLICY_WINDOW_SEC);
+        if self.policy_follow_latest {
+            self.policy_view_end_t = latest_x_max;
+        } else {
+            self.policy_view_end_t = self.policy_view_end_t.clamp(POLICY_WINDOW_SEC, latest_x_max);
+        }
+        let x_max = self.policy_view_end_t;
         let x_min = (x_max - POLICY_WINDOW_SEC).max(0.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("<< 1s").clicked() {
+                self.policy_follow_latest = false;
+                self.policy_view_end_t =
+                    (self.policy_view_end_t - PLOT_PAN_STEP_SEC).max(POLICY_WINDOW_SEC);
+            }
+            if ui.button("1s >>").clicked() {
+                self.policy_follow_latest = false;
+                self.policy_view_end_t =
+                    (self.policy_view_end_t + PLOT_PAN_STEP_SEC).min(latest_x_max);
+            }
+            if ui.button("Sync Latest").clicked() {
+                self.policy_follow_latest = true;
+                self.policy_view_end_t = latest_x_max;
+            }
+            ui.label(if self.policy_follow_latest {
+                "mode: follow latest"
+            } else {
+                "mode: manual"
+            });
+        });
 
         let fish_pts = PlotPoints::from_iter(self.policy_history.iter().map(|s| [s.t, s.fish]));
         let player_pts = PlotPoints::from_iter(self.policy_history.iter().map(|s| [s.t, s.player]));
@@ -333,9 +422,10 @@ impl PreviewApp {
                 .max_rect(left_rect)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
-        Plot::new("policy_debug_plot")
+        let plot_resp = Plot::new("policy_debug_plot")
             .legend(Legend::default())
-            .allow_scroll(false)
+            .allow_drag([true, false])
+            .allow_scroll([true, false])
             .allow_zoom(false)
             .height(left_rect.height())
             .show(&mut left_ui, |plot_ui| {
@@ -343,6 +433,12 @@ impl PreviewApp {
                 plot_ui.line(Line::new("fish", fish_pts));
                 plot_ui.line(Line::new("player", player_pts));
             });
+        let b = plot_resp.transform.bounds();
+        let new_end = b.max()[0].max(POLICY_WINDOW_SEC).min(latest_x_max);
+        if (new_end - x_max).abs() > 1e-4 {
+            self.policy_follow_latest = false;
+            self.policy_view_end_t = new_end;
+        }
 
         let painter = ui.painter_at(right_rect);
         let strip_margin_x = 4.0;
