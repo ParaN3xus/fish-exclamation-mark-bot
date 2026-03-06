@@ -474,7 +474,7 @@ impl PreviewApp {
         let painter = ui.painter_at(right_rect);
         let strip_margin_x = 4.0;
         let strip_margin_top = 0.0;
-        let strip_margin_bottom = 31.0;
+        let strip_margin_bottom = 16.0;
         let strip = egui::Rect::from_min_max(
             egui::pos2(
                 right_rect.left() + strip_margin_x,
@@ -485,7 +485,12 @@ impl PreviewApp {
                 right_rect.bottom() - strip_margin_bottom,
             ),
         );
-        painter.rect_filled(strip, 4.0, egui::Color32::WHITE);
+        let strip_bg = if ui.visuals().dark_mode {
+            egui::Color32::from_rgb(10, 10, 10)
+        } else {
+            egui::Color32::WHITE
+        };
+        painter.rect_filled(strip, 4.0, strip_bg);
         painter.rect_stroke(
             strip,
             4.0,
