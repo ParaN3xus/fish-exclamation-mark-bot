@@ -14,8 +14,16 @@ hound = "3.5.1"
 
 lewton = "0.10.2"
 ndarray = "0.17.2"
-opencv = { version = "0.98.1", default-features = false, features = ["clang-runtime", "imgproc", "imgcodecs"] }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["ndarray", "load-dynamic", "cuda", "api-24"] }
+opencv = { version = "0.98.1", default-features = false, features = [
+    "imgproc",
+    "imgcodecs",
+] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = [
+    "ndarray",
+    "load-dynamic",
+    "cuda",
+    "api-24",
+] }
 ort-sys = "=2.0.0-rc.12"
 rustfft = "6.4.1"
 serde = { version = "1.0.228", features = ["derive"] }
