@@ -1416,6 +1416,7 @@ dependencies = [
  "vrchat_osc",
  "windows 0.62.2",
  "windows-capture",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
