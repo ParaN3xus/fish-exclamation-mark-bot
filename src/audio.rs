@@ -70,11 +70,25 @@ impl AudioRing {
         }
         let frames = samples.len() / self.channels.max(1);
         self.total_frames_written = self.total_frames_written.saturating_add(frames as u64);
-
-        for &s in samples {
-            self.data[self.write_pos] = s;
-            self.write_pos = (self.write_pos + 1) % self.data.len();
+        if samples.is_empty() {
+            return;
         }
+
+        let cap = self.data.len();
+        let n = samples.len().min(cap);
+        let src = &samples[samples.len() - n..];
+        if n == cap {
+            self.data.copy_from_slice(src);
+            self.write_pos = 0;
+            return;
+        }
+
+        let first = (cap - self.write_pos).min(n);
+        self.data[self.write_pos..self.write_pos + first].copy_from_slice(&src[..first]);
+        if n > first {
+            self.data[..n - first].copy_from_slice(&src[first..]);
+        }
+        self.write_pos = (self.write_pos + n) % cap;
     }
 
     fn latest(&self, frame_count: usize) -> Vec<f32> {
@@ -85,8 +99,12 @@ impl AudioRing {
 
         let start = (self.write_pos + self.data.len() - total) % self.data.len();
         let mut out = Vec::with_capacity(total);
-        for i in 0..total {
-            out.push(self.data[(start + i) % self.data.len()]);
+        if start + total <= self.data.len() {
+            out.extend_from_slice(&self.data[start..start + total]);
+        } else {
+            let first = self.data.len() - start;
+            out.extend_from_slice(&self.data[start..]);
+            out.extend_from_slice(&self.data[..total - first]);
         }
         out
     }
@@ -403,6 +421,29 @@ pub struct AudioEvents {
     pub collected_similarity: f32,
 }
 
+#[derive(Clone, Copy)]
+pub struct AudioMatchMask {
+    pub bite: bool,
+    pub success: bool,
+    pub fail: bool,
+    pub collected: bool,
+}
+
+impl AudioMatchMask {
+    pub const fn none() -> Self {
+        Self {
+            bite: false,
+            success: false,
+            fail: false,
+            collected: false,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.bite || self.success || self.fail || self.collected
+    }
+}
+
 pub struct AudioEngine {
     ring: Arc<Mutex<AudioRing>>,
     _capture: AudioCapture,
@@ -428,6 +469,42 @@ impl AudioEngine {
         self.success_matcher.last_similarity = 0.0;
         self.fail_matcher.last_similarity = 0.0;
         self.collected_matcher.last_similarity = 0.0;
+    }
+
+    fn clear_disabled_similarities(&mut self, mask: AudioMatchMask) {
+        if !mask.bite {
+            self.bite_matcher.last_similarity = 0.0;
+        }
+        if !mask.success {
+            self.success_matcher.last_similarity = 0.0;
+        }
+        if !mask.fail {
+            self.fail_matcher.last_similarity = 0.0;
+        }
+        if !mask.collected {
+            self.collected_matcher.last_similarity = 0.0;
+        }
+    }
+
+    fn min_energy_for_mask(&self, mask: AudioMatchMask) -> Option<f32> {
+        let mut min_energy = f32::INFINITY;
+        if mask.bite {
+            min_energy = min_energy.min(self.bite_matcher.min_energy);
+        }
+        if mask.success {
+            min_energy = min_energy.min(self.success_matcher.min_energy);
+        }
+        if mask.fail {
+            min_energy = min_energy.min(self.fail_matcher.min_energy);
+        }
+        if mask.collected {
+            min_energy = min_energy.min(self.collected_matcher.min_energy);
+        }
+        if min_energy.is_finite() {
+            Some(min_energy)
+        } else {
+            None
+        }
     }
 
     pub fn new(app: &AppConfig, exe_dir: &Path) -> Result<Self> {
@@ -570,7 +647,22 @@ impl AudioEngine {
         })
     }
 
-    pub fn poll(&mut self, now_ms: u64) -> AudioEvents {
+    pub fn poll_with_mask(&mut self, now_ms: u64, mask: AudioMatchMask) -> AudioEvents {
+        if !mask.any() {
+            self.clear_similarities();
+            return AudioEvents {
+                bite_hit: false,
+                success_hit: false,
+                fail_hit: false,
+                collected_hit: false,
+                bite_similarity: 0.0,
+                success_similarity: 0.0,
+                fail_similarity: 0.0,
+                collected_similarity: 0.0,
+            };
+        }
+
+        self.clear_disabled_similarities(mask);
         if self.last_eval_ms > 0 && now_ms.saturating_sub(self.last_eval_ms) < self.poll_ms {
             return AudioEvents {
                 bite_hit: false,
@@ -611,7 +703,7 @@ impl AudioEngine {
         }
 
         if total_frames_written == self.last_total_frames_seen {
-            self.clear_similarities();
+            self.clear_disabled_similarities(mask);
             return AudioEvents {
                 bite_hit: false,
                 success_hit: false,
@@ -627,14 +719,9 @@ impl AudioEngine {
 
         let mono_raw = interleaved_to_mono(&samples, channels);
         let energy = frame_energy(&mono_raw);
-        let min_energy = self
-            .bite_matcher
-            .min_energy
-            .min(self.success_matcher.min_energy)
-            .min(self.fail_matcher.min_energy)
-            .min(self.collected_matcher.min_energy);
+        let min_energy = self.min_energy_for_mask(mask).unwrap_or(0.0);
         if energy < min_energy {
-            self.clear_similarities();
+            self.clear_disabled_similarities(mask);
             return AudioEvents {
                 bite_hit: false,
                 success_hit: false,
@@ -655,23 +742,40 @@ impl AudioEngine {
         let live_seq = self.extractor.sequence_from_samples(&mono);
         let window_start_frame = total_frames_written.saturating_sub(mono.len() as u64);
 
-        let bite_hit =
+        let bite_hit = if mask.bite {
             self.bite_matcher
-                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size);
-        let success_hit = self.success_matcher.update(
-            &live_seq,
-            energy,
-            now_ms,
-            window_start_frame,
-            self.hop,
-            self.fft_size,
-        );
-        let fail_hit =
+                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size)
+        } else {
+            self.bite_matcher.last_similarity = 0.0;
+            false
+        };
+        let success_hit = if mask.success {
+            self.success_matcher.update(
+                &live_seq,
+                energy,
+                now_ms,
+                window_start_frame,
+                self.hop,
+                self.fft_size,
+            )
+        } else {
+            self.success_matcher.last_similarity = 0.0;
+            false
+        };
+        let fail_hit = if mask.fail {
             self.fail_matcher
-                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size);
-        let collected_hit =
+                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size)
+        } else {
+            self.fail_matcher.last_similarity = 0.0;
+            false
+        };
+        let collected_hit = if mask.collected {
             self.collected_matcher
-                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size);
+                .update(&live_seq, energy, now_ms, window_start_frame, self.hop, self.fft_size)
+        } else {
+            self.collected_matcher.last_similarity = 0.0;
+            false
+        };
 
         AudioEvents {
             bite_hit,
@@ -1082,6 +1186,13 @@ fn downmix_to_mono(raw_interleaved: &[f32], channels: usize) -> Vec<f32> {
 fn interleaved_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
     if channels <= 1 {
         return samples.to_vec();
+    }
+    if channels == 2 {
+        let mut mono = Vec::with_capacity(samples.len() / 2);
+        for ab in samples.chunks_exact(2) {
+            mono.push((ab[0] + ab[1]) * 0.5);
+        }
+        return mono;
     }
 
     let frames = samples.len() / channels;

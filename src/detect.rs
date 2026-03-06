@@ -10,7 +10,7 @@ use opencv::imgproc;
 use opencv::prelude::*;
 use tracing::{error, info, warn};
 
-use crate::audio::AudioEngine;
+use crate::audio::{AudioEngine, AudioMatchMask};
 use crate::config::AppConfig;
 use crate::control::VrchatClicker;
 use crate::filter::ObservationFilter;
@@ -351,8 +351,23 @@ pub fn run_detect(
         let fps_cap = 1.0f32 / now.duration_since(last_cap_tick).as_secs_f32().max(1e-6);
         last_cap_tick = now;
 
+        let audio_mask = match bot_state {
+            BotState::WaitingFish => AudioMatchMask {
+                bite: true,
+                success: false,
+                fail: false,
+                collected: false,
+            },
+            BotState::Fishing => AudioMatchMask {
+                bite: false,
+                success: true,
+                fail: true,
+                collected: true,
+            },
+            _ => AudioMatchMask::none(),
+        };
         let audio_events = if let Some(audio) = audio.as_mut() {
-            audio.poll(boot.elapsed().as_millis() as u64)
+            audio.poll_with_mask(boot.elapsed().as_millis() as u64, audio_mask)
         } else {
             crate::audio::AudioEvents {
                 bite_hit: false,
@@ -400,24 +415,24 @@ pub fn run_detect(
             core::AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
 
-        let mut gray = Mat::default();
-        imgproc::cvt_color(
-            &bgr,
-            &mut gray,
-            imgproc::COLOR_BGR2GRAY,
-            0,
-            core::AlgorithmHint::ALGO_HINT_DEFAULT,
-        )?;
-
-        yolo_submit_seq = yolo_submit_seq.wrapping_add(1);
-        let yolo_job = YoloJob {
-            seq: yolo_submit_seq,
-            w: pkt.w,
-            h: pkt.h,
-            bgr: bgr.data_bytes()?.to_vec(),
-            conf: cfg.yolo.conf,
+        let should_submit_yolo = match bot_state {
+            BotState::BiteOrError => true,
+            BotState::Fishing => {
+                fishing_periodic_pending && yolo_latest_seq == fishing_periodic_last_eval_seq
+            }
+            _ => false,
         };
-        let _ = tx_yolo_job.try_send(yolo_job);
+        if should_submit_yolo {
+            yolo_submit_seq = yolo_submit_seq.wrapping_add(1);
+            let yolo_job = YoloJob {
+                seq: yolo_submit_seq,
+                w: pkt.w,
+                h: pkt.h,
+                bgr: bgr.data_bytes()?.to_vec(),
+                conf: cfg.yolo.conf,
+            };
+            let _ = tx_yolo_job.try_send(yolo_job);
+        }
         while let Ok(out) = rx_yolo_out.try_recv() {
             yolo_latest_seq = out.seq;
             yolo_latest_det = out.det;
@@ -622,6 +637,14 @@ pub fn run_detect(
                         } else if now.duration_since(first_det_at.unwrap_or(now)).as_millis()
                             >= u128::from(cfg.state_machine.second_detect_delay_ms)
                         {
+                            let mut gray = Mat::default();
+                            imgproc::cvt_color(
+                                &bgr,
+                                &mut gray,
+                                imgproc::COLOR_BGR2GRAY,
+                                0,
+                                core::AlgorithmHint::ALGO_HINT_DEFAULT,
+                            )?;
                             if let Some((st, br, fish)) =
                                 init_track_from_outer(o.b, o.top, o.bot, &gray, pkt.w, pkt.h)?
                             {
@@ -757,6 +780,14 @@ pub fn run_detect(
 
                     if allow_fishing_detect {
                         if let Some(st) = track_state.as_mut() {
+                        let mut gray = Mat::default();
+                        imgproc::cvt_color(
+                            &bgr,
+                            &mut gray,
+                            imgproc::COLOR_BGR2GRAY,
+                            0,
+                            core::AlgorithmHint::ALGO_HINT_DEFAULT,
+                        )?;
                         let roi = clip_box(st.roi, pkt.w, pkt.h);
                         let roi_mat =
                             Mat::roi(&gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?.try_clone()?;

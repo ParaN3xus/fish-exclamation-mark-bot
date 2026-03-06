@@ -25,7 +25,7 @@ const AUDIO_WINDOW_SEC: f64 = 8.0;
 const POLICY_WINDOW_SEC: f64 = 8.0;
 const MAX_HISTORY_SEC: f64 = 60.0;
 const PLOT_PAN_STEP_SEC: f64 = 1.0;
-const REPAINT_MS: u64 = 16;
+const REPAINT_MS: u64 = 33;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DebugTab {
