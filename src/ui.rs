@@ -401,6 +401,8 @@ impl PreviewApp {
 
         let fish_pts = PlotPoints::from_iter(self.policy_history.iter().map(|s| [s.t, s.fish]));
         let player_pts = PlotPoints::from_iter(self.policy_history.iter().map(|s| [s.t, s.player]));
+        let fish_color = egui::Color32::from_rgb(220, 60, 60);
+        let player_color = egui::Color32::from_rgb(50, 120, 235);
 
         let right_w = 80.0f32;
         let gap = 8.0f32;
@@ -430,8 +432,8 @@ impl PreviewApp {
             .height(left_rect.height())
             .show(&mut left_ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([x_min, 0.0], [x_max, 1.02]));
-                plot_ui.line(Line::new("fish", fish_pts));
-                plot_ui.line(Line::new("player", player_pts));
+                plot_ui.line(Line::new("fish", fish_pts).color(fish_color));
+                plot_ui.line(Line::new("player", player_pts).color(player_color));
             });
         let b = plot_resp.transform.bounds();
         let new_end = b.max()[0].max(POLICY_WINDOW_SEC).min(latest_x_max);
@@ -476,7 +478,12 @@ impl PreviewApp {
             painter.rect_filled(
                 player_rect,
                 2.0,
-                egui::Color32::from_rgba_unmultiplied(255, 180, 40, 100),
+                egui::Color32::from_rgba_unmultiplied(
+                    player_color.r(),
+                    player_color.g(),
+                    player_color.b(),
+                    100,
+                ),
             );
 
             let fish_half = 0.05f32 * strip.height();
@@ -487,17 +494,22 @@ impl PreviewApp {
             painter.rect_filled(
                 fish_rect,
                 2.0,
-                egui::Color32::from_rgba_unmultiplied(45, 120, 255, 90),
+                egui::Color32::from_rgba_unmultiplied(
+                    fish_color.r(),
+                    fish_color.g(),
+                    fish_color.b(),
+                    90,
+                ),
             );
             painter.circle_filled(
                 egui::pos2(strip.center().x, fish_y),
                 3.5,
-                egui::Color32::from_rgb(30, 100, 230),
+                fish_color,
             );
             painter.circle_filled(
                 egui::pos2(strip.center().x, player_y),
                 3.5,
-                egui::Color32::from_rgb(180, 90, 20),
+                player_color,
             );
         }
     }
