@@ -312,6 +312,10 @@ impl PreviewApp {
         let fail_pts = PlotPoints::from_iter(self.audio_history.iter().map(|s| [s.t, s.fail]));
         let collected_pts =
             PlotPoints::from_iter(self.audio_history.iter().map(|s| [s.t, s.collected]));
+        let bite_color = egui::Color32::from_rgb(220, 60, 60);
+        let success_color = egui::Color32::from_rgb(40, 170, 80);
+        let fail_color = egui::Color32::from_rgb(230, 145, 30);
+        let collected_color = egui::Color32::from_rgb(60, 120, 230);
 
         let plot_resp = Plot::new("audio_debug_plot")
             .legend(Legend::default())
@@ -322,37 +326,61 @@ impl PreviewApp {
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([x_min, 0.0], [x_max, 1.02]));
 
-                plot_ui.line(Line::new("bite", bite_pts).width(2.4));
-                plot_ui.line(Line::new("success", success_pts).width(2.4));
-                plot_ui.line(Line::new("fail", fail_pts).width(2.4));
-                plot_ui.line(Line::new("collected", collected_pts).width(2.4));
+                plot_ui.line(Line::new("bite", bite_pts).width(2.4).color(bite_color));
+                plot_ui.line(
+                    Line::new("success", success_pts)
+                        .width(2.4)
+                        .color(success_color),
+                );
+                plot_ui.line(Line::new("fail", fail_pts).width(2.4).color(fail_color));
+                plot_ui.line(
+                    Line::new("collected", collected_pts)
+                        .width(2.4)
+                        .color(collected_color),
+                );
 
                 plot_ui.hline(
                     HLine::new("th_bite", self.th_bite)
                         .width(2.0)
+                        .color(bite_color)
                         .style(LineStyle::Dashed { length: 8.0 }),
                 );
                 plot_ui.hline(
                     HLine::new("th_success", self.th_success)
                         .width(2.0)
+                        .color(success_color)
                         .style(LineStyle::Dashed { length: 8.0 }),
                 );
                 plot_ui.hline(
                     HLine::new("th_fail", self.th_fail)
                         .width(2.0)
+                        .color(fail_color)
                         .style(LineStyle::Dashed { length: 8.0 }),
                 );
                 plot_ui.hline(
                     HLine::new("th_collected", self.th_collected)
                         .width(2.0)
+                        .color(collected_color)
                         .style(LineStyle::Dashed { length: 8.0 }),
                 );
 
                 for ev in self.audio_events.iter().filter(|e| e.t >= x_min) {
-                    plot_ui.vline(VLine::new(format!("{}@{:.2}", ev.label, ev.t), ev.t));
+                    let ev_color = match ev.label {
+                        "bite" => bite_color,
+                        "success" => success_color,
+                        "fail" => fail_color,
+                        "collected" => collected_color,
+                        _ => egui::Color32::GRAY,
+                    };
+                    plot_ui.vline(
+                        VLine::new("", ev.t)
+                            .color(ev_color)
+                            .width(1.5)
+                            .allow_hover(false),
+                    );
                     let txt = format!("{} {:.2}", ev.label, ev.sim);
                     plot_ui.text(Text::new(
-                        format!("event_{}_{:.3}", ev.label, ev.t),
+                        "",
                         PlotPoint::new(ev.t, 0.98),
                         txt,
                     ));
