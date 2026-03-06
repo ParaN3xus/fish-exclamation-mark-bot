@@ -17,7 +17,7 @@ fn clamp01(value: f32) -> f32 {
 }
 
 fn default_scenario_offsets() -> Vec<f32> {
-    vec![-0.374_769, -0.187_385, 0.0, 0.187_385, 0.374_769]
+    vec![-0.304039, -0.15202, 0.0, 0.15202, 0.304039]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         Self {
-            horizon_steps: 21,
+            horizon_steps: 18,
             scenario_offsets: default_scenario_offsets(),
             fish_velocity_lpf: 0.7,
             player_velocity_lpf: 0.7,
