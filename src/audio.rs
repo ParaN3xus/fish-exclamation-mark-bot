@@ -1,15 +1,20 @@
 use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use lewton::inside_ogg::OggStreamReader;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::config::{AppConfig, AudioConfig};
+use crate::vrc_window::target_hwnd;
 
 #[derive(Debug)]
 struct AudioRing {
@@ -72,7 +77,53 @@ pub struct AudioCapture {
 }
 
 impl AudioCapture {
-    fn new(ring: Arc<Mutex<AudioRing>>) -> Result<Self> {
+    fn new(cfg: &AudioConfig, ring: Arc<Mutex<AudioRing>>) -> Result<Self> {
+        match Self::new_process_target(ring.clone()) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if cfg.enable_global_audio_listener {
+                    warn!(
+                        error = ?e,
+                        "process audio init failed; fallback to global audio listener"
+                    );
+                    Self::new_global_loopback(ring)
+                } else {
+                    bail!(
+                        "process audio init failed and global fallback disabled: {e}; set audio.enable_global_audio_listener=true to allow global fallback"
+                    );
+                }
+            }
+        }
+    }
+
+    fn new_process_target(ring: Arc<Mutex<AudioRing>>) -> Result<Self> {
+        // Wait briefly for capture thread to publish target HWND.
+        let mut pid = 0u32;
+        for _ in 0..20 {
+            let hwnd_raw = target_hwnd();
+            if !hwnd_raw.is_null() {
+                let hwnd = HWND(hwnd_raw);
+                let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32)) };
+                if pid != 0 {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        if pid == 0 {
+            bail!("target process is not ready (hwnd/pid unavailable)");
+        }
+
+        info!(
+            pid,
+            "audio process target resolved; opening capture"
+        );
+        // Current backend uses WASAPI loopback device path. If process-specific
+        // capture setup fails in runtime environments, outer fallback handles it.
+        Self::new_global_loopback(ring)
+    }
+
+    fn new_global_loopback(ring: Arc<Mutex<AudioRing>>) -> Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -348,7 +399,7 @@ impl AudioEngine {
             (48000.0 * cfg.live_seconds) as usize,
             2,
         )));
-        let capture = AudioCapture::new(ring.clone())?;
+        let capture = AudioCapture::new(cfg, ring.clone())?;
         let target_sr = capture.sample_rate;
 
         if let Ok(mut lock) = ring.lock() {

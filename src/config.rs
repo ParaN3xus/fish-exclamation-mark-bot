@@ -242,6 +242,7 @@ impl Default for VisionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
+    pub enable_global_audio_listener: bool,
     pub fft_size: usize,
     pub hop: usize,
     pub bar_count: usize,
@@ -264,6 +265,7 @@ pub struct AudioConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
+            enable_global_audio_listener: false,
             fft_size: 2048,
             hop: 512,
             bar_count: 48,
