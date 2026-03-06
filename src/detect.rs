@@ -337,8 +337,13 @@ pub fn run_detect(
     let mut fishing_periodic_miss_once: bool = false;
     let mut fishing_periodic_retry_after: Option<Instant> = None;
 
-    let mut last_det_tick = Instant::now();
-    let mut last_cap_tick = Instant::now();
+    let detect_fps_limit = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
+    let detect_interval = Duration::from_secs_f32(1.0 / detect_fps_limit);
+    let detect_sleep_interval = Duration::from_millis(cfg.loop_timing.detect_sleep_ms);
+    let pipeline_min_interval = detect_interval.max(detect_sleep_interval);
+    let mut last_det_tick: Option<Instant> = None;
+    let mut last_cap_tick: Option<Instant> = None;
+    let mut last_pipeline_tick = Instant::now() - pipeline_min_interval;
     let boot = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
@@ -348,8 +353,32 @@ pub fn run_detect(
         };
 
         let now = Instant::now();
-        let fps_cap = 1.0f32 / now.duration_since(last_cap_tick).as_secs_f32().max(1e-6);
-        last_cap_tick = now;
+        if now.duration_since(last_pipeline_tick) < pipeline_min_interval {
+            continue;
+        }
+        last_pipeline_tick = now;
+
+        let fps_cap = if let Some(prev_cap_tick) = last_cap_tick {
+            1.0f32
+                / pkt.captured_at
+                    .saturating_duration_since(prev_cap_tick)
+                    .as_secs_f32()
+                    .max(1e-6)
+        } else {
+            0.0
+        };
+        last_cap_tick = Some(pkt.captured_at);
+
+        let fps_det = if let Some(prev_det_tick) = last_det_tick {
+            1.0f32
+                / now
+                    .saturating_duration_since(prev_det_tick)
+                    .as_secs_f32()
+                    .max(1e-6)
+        } else {
+            0.0
+        };
+        last_det_tick = Some(now);
 
         let audio_mask = match bot_state {
             BotState::WaitingFish => AudioMatchMask {
@@ -1142,14 +1171,7 @@ pub fn run_detect(
             )?;
         }
 
-        let det_now = Instant::now();
-        let fps_det = 1.0f32
-            / det_now
-                .duration_since(last_det_tick)
-                .as_secs_f32()
-                .max(1e-6);
-        let cap_to_policy_ms = det_now.duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
-        last_det_tick = det_now;
+        let cap_to_policy_ms = Instant::now().duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
 
         let bytes = bgr.data_bytes()?.to_vec();
         let _ = tx.try_send(DetectPacket {
@@ -1177,7 +1199,6 @@ pub fn run_detect(
             cap_to_policy_ms,
         });
 
-        thread::sleep(Duration::from_millis(cfg.loop_timing.detect_sleep_ms));
     }
 
     if press {

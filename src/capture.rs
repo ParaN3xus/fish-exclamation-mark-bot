@@ -100,7 +100,12 @@ pub fn run_capture(cfg: Arc<AppConfig>, tx: Sender<FramePacket>, stop: Arc<Atomi
         let flags = CaptureFlags {
             tx: tx.clone(),
             stop: stop.clone(),
-            min_interval: Duration::from_millis(cfg.loop_timing.capture_sleep_ms),
+            min_interval: {
+                let capture_interval = Duration::from_millis(cfg.loop_timing.capture_sleep_ms);
+                let detect_fps = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
+                let detect_interval = Duration::from_secs_f32(1.0 / detect_fps);
+                capture_interval.max(detect_interval)
+            },
         };
 
         let settings = Settings::new(
