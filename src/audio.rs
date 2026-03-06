@@ -692,7 +692,7 @@ fn resolve_target_pid() -> Result<u32> {
         let hwnd_raw = target_hwnd();
         if !hwnd_raw.is_null() {
             let hwnd = HWND(hwnd_raw);
-            let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32)) };
+            let _ = get_window_thread_process_id(hwnd, &mut pid);
             if pid != 0 {
                 return Ok(pid);
             }
@@ -705,7 +705,7 @@ fn resolve_target_pid() -> Result<u32> {
 fn ensure_com_initialized_mta() {
     static COM_INIT: OnceLock<()> = OnceLock::new();
     let _ = COM_INIT.get_or_init(|| {
-        let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let _ = co_initialize_mta();
     });
 }
 
@@ -835,7 +835,7 @@ fn run_process_loopback_capture(
     if mix_bytes.len() < std::mem::size_of::<WAVEFORMATEX>() {
         bail!("invalid wave format bytes length: {}", mix_bytes.len());
     }
-    let wf = unsafe { *(mix_bytes.as_ptr() as *const WAVEFORMATEX) };
+    let wf = wave_format_header(&mix_bytes)?;
     let channels = wf.nChannels as usize;
     let sample_rate = wf.nSamplesPerSec;
     let bits = wf.wBitsPerSample as usize;
@@ -913,27 +913,25 @@ fn run_process_loopback_capture(
             let mut tmp = vec![0.0f32; sample_count];
             let silent = (flags & (AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)) != 0 || data_ptr.is_null();
             if !silent && sample_count > 0 {
-                unsafe {
-                    match bits {
-                        32 if format_tag == 3 || (block_align / channels.max(1)) == 4 => {
-                            let src = std::slice::from_raw_parts(data_ptr.cast::<f32>(), sample_count);
-                            tmp.copy_from_slice(src);
+                match bits {
+                    32 if format_tag == 3 || (block_align / channels.max(1)) == 4 => {
+                        let src = slice_f32(data_ptr, sample_count);
+                        tmp.copy_from_slice(src);
+                    }
+                    16 => {
+                        let src = slice_i16(data_ptr, sample_count);
+                        for (d, s) in tmp.iter_mut().zip(src.iter()) {
+                            *d = *s as f32 / i16::MAX as f32;
                         }
-                        16 => {
-                            let src = std::slice::from_raw_parts(data_ptr.cast::<i16>(), sample_count);
-                            for (d, s) in tmp.iter_mut().zip(src.iter()) {
-                                *d = *s as f32 / i16::MAX as f32;
-                            }
+                    }
+                    32 => {
+                        let src = slice_i32(data_ptr, sample_count);
+                        for (d, s) in tmp.iter_mut().zip(src.iter()) {
+                            *d = *s as f32 / i32::MAX as f32;
                         }
-                        32 => {
-                            let src = std::slice::from_raw_parts(data_ptr.cast::<i32>(), sample_count);
-                            for (d, s) in tmp.iter_mut().zip(src.iter()) {
-                                *d = *s as f32 / i32::MAX as f32;
-                            }
-                        }
-                        _ => {
-                            // Unknown format, keep this packet as silence.
-                        }
+                    }
+                    _ => {
+                        // Unknown format, keep this packet as silence.
                     }
                 }
             }
@@ -968,6 +966,33 @@ fn default_render_mix_format_bytes() -> Result<Vec<u8>> {
     let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }?;
     let p = unsafe { client.GetMixFormat().context("default endpoint GetMixFormat failed")? };
     Ok(wave_format_bytes_and_free(p))
+}
+
+fn get_window_thread_process_id(hwnd: HWND, pid: &mut u32) -> u32 {
+    unsafe { GetWindowThreadProcessId(hwnd, Some(pid as *mut u32)) }
+}
+
+fn co_initialize_mta() -> windows::core::Result<()> {
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok() }
+}
+
+fn wave_format_header(bytes: &[u8]) -> Result<WAVEFORMATEX> {
+    if bytes.len() < std::mem::size_of::<WAVEFORMATEX>() {
+        bail!("wave format bytes too short: {}", bytes.len());
+    }
+    Ok(unsafe { *(bytes.as_ptr().cast::<WAVEFORMATEX>()) })
+}
+
+fn slice_f32<'a>(ptr: *mut u8, len: usize) -> &'a [f32] {
+    unsafe { std::slice::from_raw_parts(ptr.cast::<f32>(), len) }
+}
+
+fn slice_i16<'a>(ptr: *mut u8, len: usize) -> &'a [i16] {
+    unsafe { std::slice::from_raw_parts(ptr.cast::<i16>(), len) }
+}
+
+fn slice_i32<'a>(ptr: *mut u8, len: usize) -> &'a [i32] {
+    unsafe { std::slice::from_raw_parts(ptr.cast::<i32>(), len) }
 }
 
 #[derive(Clone)]
