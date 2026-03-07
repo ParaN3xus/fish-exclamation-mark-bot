@@ -34,6 +34,7 @@ fn main() -> Result<()> {
         .init();
 
     let loaded = load_or_create_config()?;
+    let cfg_path = loaded.path.clone();
     let cfg = Arc::new(loaded.app);
     info!(path = %loaded.path.display(), "config loaded");
     info!("starting bot");
@@ -61,7 +62,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let ui_res = run_ui(rx_det, tx_cmd, stop.clone(), cfg);
+    let ui_res = run_ui(rx_det, tx_cmd, stop.clone(), cfg, cfg_path);
     stop.store(true, Ordering::Relaxed);
 
     let _ = t1.join();

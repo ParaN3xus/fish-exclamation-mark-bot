@@ -1,4 +1,6 @@
+use std::fs;
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
@@ -57,6 +59,8 @@ struct PolicySample {
 }
 
 struct PreviewApp {
+    cfg: Arc<AppConfig>,
+    config_path: PathBuf,
     rx: Receiver<DetectPacket>,
     tx_cmd: Sender<DetectCommand>,
     stop: Arc<AtomicBool>,
@@ -79,6 +83,7 @@ struct PreviewApp {
     th_fail: f64,
     th_collected: f64,
     default_target_half: f64,
+    window_size: [f32; 2],
 }
 
 impl PreviewApp {
@@ -87,8 +92,12 @@ impl PreviewApp {
         tx_cmd: Sender<DetectCommand>,
         stop: Arc<AtomicBool>,
         cfg: Arc<AppConfig>,
+        config_path: PathBuf,
+        initial_window_size: [f32; 2],
     ) -> Self {
         Self {
+            cfg: cfg.clone(),
+            config_path,
             rx,
             tx_cmd,
             stop,
@@ -111,6 +120,7 @@ impl PreviewApp {
             th_fail: cfg.audio.fail_threshold as f64,
             th_collected: cfg.audio.collected_threshold as f64,
             default_target_half: cfg.policy.fish_target_half_size as f64,
+            window_size: initial_window_size,
         }
     }
 
@@ -593,12 +603,24 @@ impl eframe::App for PreviewApp {
             DebugTab::Policy => self.draw_policy_tab(ui),
         });
 
+        if let Some(size) = current_viewport_inner_size(ctx) {
+            self.window_size = size;
+        }
+
         ctx.request_repaint_after(Duration::from_millis(REPAINT_MS));
     }
 }
 
 impl Drop for PreviewApp {
     fn drop(&mut self) {
+        if let Err(e) = save_startup_window_size(&self.config_path, self.cfg.as_ref(), self.window_size)
+        {
+            warn!(
+                error = ?e,
+                path = %self.config_path.display(),
+                "failed to persist startup ui window size"
+            );
+        }
         self.stop.store(true, Ordering::Relaxed);
     }
 }
@@ -708,14 +730,19 @@ pub fn run_ui(
     tx_cmd: Sender<DetectCommand>,
     stop: Arc<AtomicBool>,
     cfg: Arc<AppConfig>,
+    config_path: PathBuf,
 ) -> Result<()> {
     let _hotkeys = GlobalHotkeys::start(tx_cmd.clone(), stop.clone());
 
     let window_title = format!("FISH! Bot v{}", env!("CARGO_PKG_VERSION"));
+    let initial_window_size = sanitize_window_size(
+        cfg.startup.ui_window_width,
+        cfg.startup.ui_window_height,
+    );
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(window_title.clone())
-            .with_inner_size([800.0, 500.0]),
+            .with_inner_size(initial_window_size),
         ..Default::default()
     };
 
@@ -729,10 +756,36 @@ pub fn run_ui(
                 tx_cmd,
                 app_stop.clone(),
                 cfg.clone(),
+                config_path.clone(),
+                initial_window_size,
             )))
         }),
     )
     .map_err(|e| anyhow!("egui ui failed: {e}"))?;
 
+    Ok(())
+}
+
+fn sanitize_window_size(w: f32, h: f32) -> [f32; 2] {
+    let w = if w.is_finite() { w } else { 800.0 }.clamp(320.0, 8192.0);
+    let h = if h.is_finite() { h } else { 500.0 }.clamp(240.0, 8192.0);
+    [w, h]
+}
+
+fn current_viewport_inner_size(ctx: &egui::Context) -> Option<[f32; 2]> {
+    let rect = ctx.input(|i| i.viewport().inner_rect)?;
+    let size = rect.size();
+    if !size.x.is_finite() || !size.y.is_finite() {
+        return None;
+    }
+    Some(sanitize_window_size(size.x, size.y))
+}
+
+fn save_startup_window_size(config_path: &Path, cfg: &AppConfig, size: [f32; 2]) -> Result<()> {
+    let mut next = cfg.clone();
+    next.startup.ui_window_width = size[0];
+    next.startup.ui_window_height = size[1];
+    let text = toml::to_string_pretty(&next)?;
+    fs::write(config_path, text)?;
     Ok(())
 }

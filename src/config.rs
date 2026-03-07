@@ -125,12 +125,16 @@ fn resolve_from_exe_path(exe_dir: &Path, path: &Path) -> PathBuf {
 #[serde(default)]
 pub struct StartupConfig {
     pub start_stopped: bool,
+    pub ui_window_width: f32,
+    pub ui_window_height: f32,
 }
 
 impl Default for StartupConfig {
     fn default() -> Self {
         Self {
             start_stopped: false,
+            ui_window_width: 800.0,
+            ui_window_height: 500.0,
         }
     }
 }
