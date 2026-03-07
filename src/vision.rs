@@ -78,15 +78,21 @@ impl YoloOrt {
         })
     }
 
-    fn centered_square(frame: &Mat) -> (Rect, Mat) {
+    fn centered_square(frame: &Mat) -> Result<(Rect, Mat)> {
         let w = frame.cols();
         let h = frame.rows();
+        if w <= 0 || h <= 0 {
+            return Err(anyhow!("invalid frame size: {}x{}", w, h));
+        }
         let side = w.min(h);
+        if side <= 0 {
+            return Err(anyhow!("invalid square side from frame size: {}x{}", w, h));
+        }
         let sx = (w - side) / 2;
         let sy = (h - side) / 2;
         let r = Rect::new(sx, sy, side, side);
-        let sq = Mat::roi(frame, r).unwrap();
-        (r, sq.try_clone().unwrap())
+        let sq = Mat::roi(frame, r)?;
+        Ok((r, sq.try_clone()?))
     }
 
     fn preprocess(&self, sq_bgr: &Mat) -> Result<Vec<f32>> {
@@ -128,7 +134,7 @@ impl YoloOrt {
     }
 
     pub fn detect_outer(&mut self, frame_bgr: &Mat, conf_thres: f32) -> Result<Option<OuterDet>> {
-        let (sq_rect, sq) = Self::centered_square(frame_bgr);
+        let (sq_rect, sq) = Self::centered_square(frame_bgr)?;
         let input = self.preprocess(&sq)?;
         let input_tensor = Tensor::<f32>::from_array((
             vec![1i64, 3, self.imgsz as i64, self.imgsz as i64],
@@ -658,6 +664,21 @@ pub fn detect_bright_fish_strategy(
 }
 
 pub fn mat_bgra_from_bytes(w: i32, h: i32, bgra: &[u8]) -> Result<Mat> {
+    if w <= 0 || h <= 0 {
+        return Err(anyhow!("invalid bgra frame size: {}x{}", w, h));
+    }
+    let expected = (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(4);
+    if bgra.len() != expected {
+        return Err(anyhow!(
+            "bgra length mismatch: got {}, expected {} for {}x{}",
+            bgra.len(),
+            expected,
+            w,
+            h
+        ));
+    }
     let mut m = Mat::new_rows_cols_with_default(h, w, CV_8UC4, Scalar::default())?;
     m.data_bytes_mut()?.copy_from_slice(bgra);
     Ok(m)

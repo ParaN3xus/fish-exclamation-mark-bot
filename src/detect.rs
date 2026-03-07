@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use opencv::core::{self, CV_8UC3, Rect, Scalar};
 use opencv::imgproc;
@@ -36,6 +36,21 @@ struct YoloOut {
 }
 
 fn mat_bgr_from_bytes(w: i32, h: i32, bgr: &[u8]) -> Result<Mat> {
+    if w <= 0 || h <= 0 {
+        return Err(anyhow!("invalid bgr frame size: {}x{}", w, h));
+    }
+    let expected = (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(3);
+    if bgr.len() != expected {
+        return Err(anyhow!(
+            "bgr length mismatch: got {}, expected {} for {}x{}",
+            bgr.len(),
+            expected,
+            w,
+            h
+        ));
+    }
     let mut m = Mat::new_rows_cols_with_default(h, w, CV_8UC3, Scalar::default())?;
     m.data_bytes_mut()?.copy_from_slice(bgr);
     Ok(m)
@@ -434,15 +449,30 @@ pub fn run_detect(
             safe_poll_focus(clicker);
         }
 
-        let bgra = mat_bgra_from_bytes(pkt.w, pkt.h, &pkt.bgra)?;
+        let bgra = match mat_bgra_from_bytes(pkt.w, pkt.h, &pkt.bgra) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    error = ?e,
+                    w = pkt.w,
+                    h = pkt.h,
+                    len = pkt.bgra.len(),
+                    "drop invalid capture frame"
+                );
+                continue;
+            }
+        };
         let mut bgr = Mat::default();
-        imgproc::cvt_color(
+        if let Err(e) = imgproc::cvt_color(
             &bgra,
             &mut bgr,
             imgproc::COLOR_BGRA2BGR,
             0,
             core::AlgorithmHint::ALGO_HINT_DEFAULT,
-        )?;
+        ) {
+            warn!(error = ?e, "drop frame: BGRA->BGR conversion failed");
+            continue;
+        }
 
         let should_submit_yolo = match bot_state {
             BotState::BiteOrError => true,

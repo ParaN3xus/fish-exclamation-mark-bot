@@ -63,14 +63,63 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
         }
         self.last_sent = Instant::now();
 
-        let w = frame.width() as i32;
-        let h = frame.height() as i32;
-        let buf = frame.buffer()?;
-        let raw = buf.as_nopadding_buffer(&mut self.scratch);
+        let mut buf = frame.buffer()?;
+        let w_u = buf.width() as usize;
+        let h_u = buf.height() as usize;
+        if w_u == 0 || h_u == 0 {
+            return Ok(());
+        }
+        let row_pitch = buf.row_pitch() as usize;
+        let Some(row_bytes) = w_u.checked_mul(4) else {
+            warn!(w = w_u, "drop frame: row size overflow");
+            return Ok(());
+        };
+        if row_pitch < row_bytes {
+            warn!(row_pitch, row_bytes, "drop frame: invalid row_pitch");
+            return Ok(());
+        }
+        let Some(packed_len) = row_bytes.checked_mul(h_u) else {
+            warn!(w = w_u, h = h_u, "drop frame: packed size overflow");
+            return Ok(());
+        };
+        let Some(raw_needed) = row_pitch.checked_mul(h_u) else {
+            warn!(row_pitch, h = h_u, "drop frame: raw size overflow");
+            return Ok(());
+        };
+
+        let raw = buf.as_raw_buffer();
+        if raw.len() < raw_needed {
+            warn!(
+                got = raw.len(),
+                need = raw_needed,
+                w = w_u,
+                h = h_u,
+                row_pitch,
+                "drop frame: short raw buffer during resize"
+            );
+            return Ok(());
+        }
+
+        if self.scratch.len() != packed_len {
+            self.scratch.resize(packed_len, 0);
+        }
+        if row_pitch == row_bytes {
+            self.scratch[..packed_len].copy_from_slice(&raw[..packed_len]);
+        } else {
+            for y in 0..h_u {
+                let src_off = y * row_pitch;
+                let dst_off = y * row_bytes;
+                self.scratch[dst_off..dst_off + row_bytes]
+                    .copy_from_slice(&raw[src_off..src_off + row_bytes]);
+            }
+        }
+
+        let w = w_u as i32;
+        let h = h_u as i32;
         let _ = self.tx.try_send(FramePacket {
             w,
             h,
-            bgra: raw.to_vec(),
+            bgra: self.scratch.clone(),
             captured_at: Instant::now(),
         });
         Ok(())
