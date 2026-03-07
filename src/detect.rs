@@ -355,10 +355,9 @@ pub fn run_detect(
     let detect_fps_limit = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
     let detect_interval = Duration::from_secs_f32(1.0 / detect_fps_limit);
     let detect_sleep_interval = Duration::from_millis(cfg.loop_timing.detect_sleep_ms);
-    let pipeline_min_interval = detect_interval.max(detect_sleep_interval);
     let mut last_det_tick: Option<Instant> = None;
     let mut last_cap_tick: Option<Instant> = None;
-    let mut last_pipeline_tick = Instant::now() - pipeline_min_interval;
+    let mut last_pipeline_tick = Instant::now() - detect_interval;
     let boot = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
@@ -368,7 +367,17 @@ pub fn run_detect(
         };
 
         let now = Instant::now();
-        if now.duration_since(last_pipeline_tick) < pipeline_min_interval {
+        let pipeline_min_interval = match bot_state {
+            BotState::Fishing => detect_interval.max(detect_sleep_interval),
+            _ => detect_sleep_interval,
+        };
+        let elapsed = now.duration_since(last_pipeline_tick);
+        if elapsed < pipeline_min_interval {
+            let remain = pipeline_min_interval - elapsed;
+            let sleep_for = remain;
+            if !sleep_for.is_zero() {
+                thread::sleep(sleep_for);
+            }
             continue;
         }
         last_pipeline_tick = now;
@@ -1110,6 +1119,11 @@ pub fn run_detect(
                     fishing_periodic_retry_after = None;
                 }
             }
+        }
+
+        // UI channel is bounded(1). If it is still full, skip debug rendering/copy this tick.
+        if tx.is_full() {
+            continue;
         }
 
         if let Some(o) = outer_draw {

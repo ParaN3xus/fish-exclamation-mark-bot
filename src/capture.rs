@@ -162,7 +162,7 @@ pub fn run_capture(cfg: Arc<AppConfig>, tx: Sender<FramePacket>, stop: Arc<Atomi
             CursorCaptureSettings::Default,
             DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Default,
+            MinimumUpdateIntervalSettings::Custom(flags.min_interval),
             DirtyRegionSettings::Default,
             ColorFormat::Bgra8,
             flags,
