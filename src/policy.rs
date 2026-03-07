@@ -215,7 +215,11 @@ impl StochasticOutputFeedbackMpcPolicy {
         let fish_v_raw = (obs.fish_center - self.prev_fish.unwrap_or(obs.fish_center)) / dt;
         let player_v_raw = (obs.player_center - self.prev_player.unwrap_or(obs.player_center)) / dt;
         let clipped_fish_v = clamp(fish_v_raw, -self.cfg.velocity_clip, self.cfg.velocity_clip);
-        let clipped_player_v = clamp(player_v_raw, -self.cfg.velocity_clip, self.cfg.velocity_clip);
+        let clipped_player_v = clamp(
+            player_v_raw,
+            -self.cfg.velocity_clip,
+            self.cfg.velocity_clip,
+        );
 
         self.fish_velocity_est = self.cfg.fish_velocity_lpf * self.fish_velocity_est
             + self.cfg.velocity_observe_gain * clipped_fish_v;
@@ -225,8 +229,12 @@ impl StochasticOutputFeedbackMpcPolicy {
         let mut best_action = self.last_action;
         let mut best_score = f32::NEG_INFINITY;
         for sequence in self.candidate_sequences() {
-            let score =
-                self.score_sequence(&sequence, obs, self.fish_velocity_est, self.player_velocity_est);
+            let score = self.score_sequence(
+                &sequence,
+                obs,
+                self.fish_velocity_est,
+                self.player_velocity_est,
+            );
             if score > best_score {
                 best_score = score;
                 best_action = sequence[0];
@@ -239,5 +247,3 @@ impl StochasticOutputFeedbackMpcPolicy {
         best_action
     }
 }
-
-pub type TimeOptimalBangBangPolicy = StochasticOutputFeedbackMpcPolicy;

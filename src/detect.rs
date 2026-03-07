@@ -14,7 +14,7 @@ use crate::audio::{AudioEngine, AudioMatchMask};
 use crate::config::AppConfig;
 use crate::control::VrchatClicker;
 use crate::filter::ObservationFilter;
-use crate::policy::{FishingObservation, TimeOptimalBangBangPolicy};
+use crate::policy::{FishingObservation, StochasticOutputFeedbackMpcPolicy};
 use crate::types::{BBox, BotState, DetectCommand, DetectPacket, FramePacket, Kp, TrackState};
 use crate::vision::{
     YoloOrt, clip_box, detect_bright_fish_strategy, mat_bgra_from_bytes, roi_from_outer_and_kp,
@@ -39,9 +39,7 @@ fn mat_bgr_from_bytes(w: i32, h: i32, bgr: &[u8]) -> Result<Mat> {
     if w <= 0 || h <= 0 {
         return Err(anyhow!("invalid bgr frame size: {}x{}", w, h));
     }
-    let expected = (w as usize)
-        .saturating_mul(h as usize)
-        .saturating_mul(3);
+    let expected = (w as usize).saturating_mul(h as usize).saturating_mul(3);
     if bgr.len() != expected {
         return Err(anyhow!(
             "bgr length mismatch: got {}, expected {} for {}x{}",
@@ -334,7 +332,7 @@ pub fn run_detect(
         BotState::WaitingFish
     };
     let mut track_state: Option<TrackState> = None;
-    let mut policy: Option<TimeOptimalBangBangPolicy> = None;
+    let mut policy: Option<StochasticOutputFeedbackMpcPolicy> = None;
     let mut obs_filter: Option<ObservationFilter> = None;
     let mut first_det_at: Option<Instant> = None;
     let mut state_entered_at: Option<Instant> = None;
@@ -361,7 +359,9 @@ pub fn run_detect(
     let boot = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
-        let pkt = match rx.recv_timeout(Duration::from_millis(cfg.loop_timing.detect_recv_timeout_ms)) {
+        let pkt = match rx.recv_timeout(Duration::from_millis(
+            cfg.loop_timing.detect_recv_timeout_ms,
+        )) {
             Ok(v) => v,
             Err(_) => continue,
         };
@@ -384,7 +384,8 @@ pub fn run_detect(
 
         let fps_cap = if let Some(prev_cap_tick) = last_cap_tick {
             1.0f32
-                / pkt.captured_at
+                / pkt
+                    .captured_at
                     .saturating_duration_since(prev_cap_tick)
                     .as_secs_f32()
                     .max(1e-6)
@@ -434,7 +435,11 @@ pub fn run_detect(
             }
         };
         if audio_events.bite_hit {
-            info!(sound = "bite", sim = audio_events.bite_similarity, "audio hit");
+            info!(
+                sound = "bite",
+                sim = audio_events.bite_similarity,
+                "audio hit"
+            );
         }
         if audio_events.success_hit {
             info!(
@@ -444,7 +449,11 @@ pub fn run_detect(
             );
         }
         if audio_events.fail_hit {
-            info!(sound = "fail", sim = audio_events.fail_similarity, "audio hit");
+            info!(
+                sound = "fail",
+                sim = audio_events.fail_similarity,
+                "audio hit"
+            );
         }
         if audio_events.collected_hit {
             info!(
@@ -684,72 +693,74 @@ pub fn run_detect(
                     if yolo_latest_seq != bite_or_error_last_yolo_seq {
                         bite_or_error_last_yolo_seq = yolo_latest_seq;
                         if let Some(o) = yolo_latest_det {
-                        info!(
-                            conf = o.conf,
-                            x = o.b.x,
-                            y = o.b.y,
-                            w = o.b.w,
-                            h = o.b.h,
-                            "yolo detection success in BiteOrError"
-                        );
-                        outer_draw = Some(o.b);
-                        yolo_top_draw = Some(o.top);
-                        yolo_bot_draw = Some(o.bot);
-                        let in_first_window = now
-                            .duration_since(state_entered_at.unwrap_or(now))
-                            .as_millis()
-                            < u128::from(cfg.state_machine.reel_first_det_timeout_ms);
-                        if first_det_at.is_none() && in_first_window {
-                            info!("BiteOrError first yolo detection acquired in timeout window");
-                            first_det_at = Some(now);
-                        } else if now.duration_since(first_det_at.unwrap_or(now)).as_millis()
-                            >= u128::from(cfg.state_machine.second_detect_delay_ms)
-                        {
-                            let mut gray = Mat::default();
-                            imgproc::cvt_color(
-                                &bgr,
-                                &mut gray,
-                                imgproc::COLOR_BGR2GRAY,
-                                0,
-                                core::AlgorithmHint::ALGO_HINT_DEFAULT,
-                            )?;
-                            if let Some((st, br, fish)) =
-                                init_track_from_outer(o.b, o.top, o.bot, &gray, pkt.w, pkt.h)?
-                            {
+                            info!(
+                                conf = o.conf,
+                                x = o.b.x,
+                                y = o.b.y,
+                                w = o.b.w,
+                                h = o.b.h,
+                                "yolo detection success in BiteOrError"
+                            );
+                            outer_draw = Some(o.b);
+                            yolo_top_draw = Some(o.top);
+                            yolo_bot_draw = Some(o.bot);
+                            let in_first_window = now
+                                .duration_since(state_entered_at.unwrap_or(now))
+                                .as_millis()
+                                < u128::from(cfg.state_machine.reel_first_det_timeout_ms);
+                            if first_det_at.is_none() && in_first_window {
                                 info!(
-                                    roi_x = st.roi.x,
-                                    roi_y = st.roi.y,
-                                    roi_w = st.roi.w,
-                                    roi_h = st.roi.h,
-                                    "BiteOrError second yolo detection success; tracking initialized"
+                                    "BiteOrError first yolo detection acquired in timeout window"
                                 );
-                                track_state = Some(st);
-                                if let Some(b) = br {
-                                    let (p0, p1) = bright_endpoints_along_axis(b, o.top, o.bot);
-                                    bright_p0_draw = Some(p0);
-                                    bright_p1_draw = Some(p1);
+                                first_det_at = Some(now);
+                            } else if now.duration_since(first_det_at.unwrap_or(now)).as_millis()
+                                >= u128::from(cfg.state_machine.second_detect_delay_ms)
+                            {
+                                let mut gray = Mat::default();
+                                imgproc::cvt_color(
+                                    &bgr,
+                                    &mut gray,
+                                    imgproc::COLOR_BGR2GRAY,
+                                    0,
+                                    core::AlgorithmHint::ALGO_HINT_DEFAULT,
+                                )?;
+                                if let Some((st, br, fish)) =
+                                    init_track_from_outer(o.b, o.top, o.bot, &gray, pkt.w, pkt.h)?
+                                {
+                                    info!(
+                                        roi_x = st.roi.x,
+                                        roi_y = st.roi.y,
+                                        roi_w = st.roi.w,
+                                        roi_h = st.roi.h,
+                                        "BiteOrError second yolo detection success; tracking initialized"
+                                    );
+                                    track_state = Some(st);
+                                    if let Some(b) = br {
+                                        let (p0, p1) = bright_endpoints_along_axis(b, o.top, o.bot);
+                                        bright_p0_draw = Some(p0);
+                                        bright_p1_draw = Some(p1);
+                                    }
+                                    if let Some(f) = fish {
+                                        fish_p_draw = Some(Kp {
+                                            x: (f.x + f.w / 2) as f32,
+                                            y: (f.y + f.h / 2) as f32,
+                                        });
+                                    }
+                                    policy = None;
+                                    obs_filter = None;
+                                    last_obs_tick = None;
+                                    bot_state = BotState::Fishing;
+                                    log_transition(
+                                        BotState::BiteOrError,
+                                        bot_state,
+                                        "tracking initialized",
+                                        &mut status_text,
+                                        &mut state_entered_at,
+                                    );
                                 }
-                                if let Some(f) = fish {
-                                    fish_p_draw = Some(Kp {
-                                        x: (f.x + f.w / 2) as f32,
-                                        y: (f.y + f.h / 2) as f32,
-                                    });
-                                }
-                                policy = None;
-                                obs_filter = None;
-                                last_obs_tick = None;
-                                bot_state = BotState::Fishing;
-                                log_transition(
-                                    BotState::BiteOrError,
-                                    bot_state,
-                                    "tracking initialized",
-                                    &mut status_text,
-                                    &mut state_entered_at,
-                                );
+                                first_det_at = Some(now);
                             }
-                            first_det_at = Some(now);
                         }
-                    }
                     }
 
                     if first_det_at.is_none()
@@ -802,7 +813,8 @@ pub fn run_detect(
                         }
                         fishing_periodic_pending = true;
                     }
-                    if fishing_periodic_pending && yolo_latest_seq != fishing_periodic_last_eval_seq {
+                    if fishing_periodic_pending && yolo_latest_seq != fishing_periodic_last_eval_seq
+                    {
                         fishing_periodic_last_eval_seq = yolo_latest_seq;
                         fishing_periodic_pending = false;
                         if yolo_latest_det.is_none() {
@@ -848,135 +860,136 @@ pub fn run_detect(
 
                     if allow_fishing_detect {
                         if let Some(st) = track_state.as_mut() {
-                        let mut gray = Mat::default();
-                        imgproc::cvt_color(
-                            &bgr,
-                            &mut gray,
-                            imgproc::COLOR_BGR2GRAY,
-                            0,
-                            core::AlgorithmHint::ALGO_HINT_DEFAULT,
-                        )?;
-                        let roi = clip_box(st.roi, pkt.w, pkt.h);
-                        let roi_mat =
-                            Mat::roi(&gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?.try_clone()?;
-                        let (br, fish, _pt, _pb, _spec) = detect_bright_fish_strategy(
-                            &roi_mat,
-                            st.outer_rel,
-                            st.top_rel,
-                            st.bot_rel,
-                            Some(st.bright_h_norm.max(8)),
-                            st.fish_spec.as_deref(),
-                            Some((st.proc_top, st.proc_bot)),
-                        )?;
+                            let mut gray = Mat::default();
+                            imgproc::cvt_color(
+                                &bgr,
+                                &mut gray,
+                                imgproc::COLOR_BGR2GRAY,
+                                0,
+                                core::AlgorithmHint::ALGO_HINT_DEFAULT,
+                            )?;
+                            let roi = clip_box(st.roi, pkt.w, pkt.h);
+                            let roi_mat = Mat::roi(&gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?
+                                .try_clone()?;
+                            let (br, fish, _pt, _pb, _spec) = detect_bright_fish_strategy(
+                                &roi_mat,
+                                st.outer_rel,
+                                st.top_rel,
+                                st.bot_rel,
+                                Some(st.bright_h_norm.max(8)),
+                                st.fish_spec.as_deref(),
+                                Some((st.proc_top, st.proc_bot)),
+                            )?;
 
-                        yolo_top_draw = Some(Kp {
-                            x: st.top_rel.x + roi.x as f32,
-                            y: st.top_rel.y + roi.y as f32,
-                        });
-                        yolo_bot_draw = Some(Kp {
-                            x: st.bot_rel.x + roi.x as f32,
-                            y: st.bot_rel.y + roi.y as f32,
-                        });
-
-                        let mut br_abs = br.map(|b| BBox {
-                            x: b.x + roi.x,
-                            y: b.y + roi.y,
-                            ..b
-                        });
-                        let fish_abs = fish.map(|f| BBox {
-                            x: f.x + roi.x,
-                            y: f.y + roi.y,
-                            ..f
-                        });
-                        outer_draw = Some(roi);
-
-                        if let (Some(mut br), Some(fish)) = (br_abs, fish_abs) {
-                            let dt = if let Some(last_tick) = last_obs_tick {
-                                now.duration_since(last_tick).as_secs_f32().max(1e-3)
-                            } else {
-                                1.0 / 60.0
-                            };
-                            last_obs_tick = Some(now);
-
-                            let expected_h_px = ((st.bright_h_norm.max(8) as f32 / 168.0)
-                                * roi.h as f32)
-                                .round() as i32;
-                            br = extend_bright_to_expected_height(
-                                br,
-                                roi,
-                                pkt.h,
-                                expected_h_px.max(1),
-                                cfg.vision.roi_edge_eps_px,
-                                cfg.vision.extend_min_visible_ratio,
-                                cfg.vision.extend_min_width_ratio,
-                            );
-                            br_abs = Some(br);
-
-                            // Align with src/gym/fishing_env.py: y=0 at bottom, y=1 at top.
-                            let fish_center_top01 = (((fish.y + fish.h / 2) - roi.y) as f32
-                                / roi.h as f32)
-                                .clamp(0.0, 1.0);
-                            let player_center_top01 =
-                                (((br.y + br.h / 2) - roi.y) as f32 / roi.h as f32).clamp(0.0, 1.0);
-                            let fish_center = 1.0 - fish_center_top01;
-                            let player_center = 1.0 - player_center_top01;
-                            let player_target_half_size =
-                                (st.bright_h_norm.max(8) as f32 / 168.0 * 0.5).clamp(0.0, 0.5);
-
-                            let obs_raw = FishingObservation {
-                                fish_center,
-                                player_center,
-                                dt,
-                                player_target_half_size,
-                            };
-
-                            let filtered = if let Some(f) = obs_filter.as_mut() {
-                                f.apply(obs_raw)
-                            } else {
-                                let mut f = ObservationFilter::new(cfg.filter.clone());
-                                let init = f.reset(obs_raw);
-                                obs_filter = Some(f);
-                                init
-                            };
-
-                            let action = {
-                                let p = policy.get_or_insert_with(|| {
-                                    TimeOptimalBangBangPolicy::from_config(&cfg.policy)
-                                });
-                                p.act(filtered)
-                            };
-
-                            policy_fish_center = Some(filtered.fish_center);
-                            policy_player_center = Some(filtered.player_center);
-                            policy_target_half = Some(filtered.player_target_half_size);
-                            let overlap_like = 1.0
-                                - ((filtered.fish_center - filtered.player_center).abs()
-                                    / filtered.player_target_half_size.max(1e-4))
-                                .clamp(0.0, 1.0);
-                            policy_progress = Some(overlap_like);
-
-                            let next_press = action == 1;
-                            if next_press != press {
-                                if let Some(clicker) = clicker.as_mut() {
-                                    safe_set_press(clicker, next_press);
-                                }
-                                press = next_press;
-                            }
-                        }
-
-                        if let Some(b) = br_abs {
-                            if let (Some(tp), Some(bp)) = (yolo_top_draw, yolo_bot_draw) {
-                                let (p0, p1) = bright_endpoints_along_axis(b, tp, bp);
-                                bright_p0_draw = Some(p0);
-                                bright_p1_draw = Some(p1);
-                            }
-                        }
-                        if let Some(f) = fish_abs {
-                            fish_p_draw = Some(Kp {
-                                x: (f.x + f.w / 2) as f32,
-                                y: (f.y + f.h / 2) as f32,
+                            yolo_top_draw = Some(Kp {
+                                x: st.top_rel.x + roi.x as f32,
+                                y: st.top_rel.y + roi.y as f32,
                             });
-                        }
+                            yolo_bot_draw = Some(Kp {
+                                x: st.bot_rel.x + roi.x as f32,
+                                y: st.bot_rel.y + roi.y as f32,
+                            });
+
+                            let mut br_abs = br.map(|b| BBox {
+                                x: b.x + roi.x,
+                                y: b.y + roi.y,
+                                ..b
+                            });
+                            let fish_abs = fish.map(|f| BBox {
+                                x: f.x + roi.x,
+                                y: f.y + roi.y,
+                                ..f
+                            });
+                            outer_draw = Some(roi);
+
+                            if let (Some(mut br), Some(fish)) = (br_abs, fish_abs) {
+                                let dt = if let Some(last_tick) = last_obs_tick {
+                                    now.duration_since(last_tick).as_secs_f32().max(1e-3)
+                                } else {
+                                    1.0 / 60.0
+                                };
+                                last_obs_tick = Some(now);
+
+                                let expected_h_px =
+                                    ((st.bright_h_norm.max(8) as f32 / 168.0) * roi.h as f32)
+                                        .round() as i32;
+                                br = extend_bright_to_expected_height(
+                                    br,
+                                    roi,
+                                    pkt.h,
+                                    expected_h_px.max(1),
+                                    cfg.vision.roi_edge_eps_px,
+                                    cfg.vision.extend_min_visible_ratio,
+                                    cfg.vision.extend_min_width_ratio,
+                                );
+                                br_abs = Some(br);
+
+                                // Align with src/gym/fishing_env.py: y=0 at bottom, y=1 at top.
+                                let fish_center_top01 = (((fish.y + fish.h / 2) - roi.y) as f32
+                                    / roi.h as f32)
+                                    .clamp(0.0, 1.0);
+                                let player_center_top01 = (((br.y + br.h / 2) - roi.y) as f32
+                                    / roi.h as f32)
+                                    .clamp(0.0, 1.0);
+                                let fish_center = 1.0 - fish_center_top01;
+                                let player_center = 1.0 - player_center_top01;
+                                let player_target_half_size =
+                                    (st.bright_h_norm.max(8) as f32 / 168.0 * 0.5).clamp(0.0, 0.5);
+
+                                let obs_raw = FishingObservation {
+                                    fish_center,
+                                    player_center,
+                                    dt,
+                                    player_target_half_size,
+                                };
+
+                                let filtered = if let Some(f) = obs_filter.as_mut() {
+                                    f.apply(obs_raw)
+                                } else {
+                                    let mut f = ObservationFilter::new(cfg.filter.clone());
+                                    let init = f.reset(obs_raw);
+                                    obs_filter = Some(f);
+                                    init
+                                };
+
+                                let action = {
+                                    let p = policy.get_or_insert_with(|| {
+                                        StochasticOutputFeedbackMpcPolicy::from_config(&cfg.policy)
+                                    });
+                                    p.act(filtered)
+                                };
+
+                                policy_fish_center = Some(filtered.fish_center);
+                                policy_player_center = Some(filtered.player_center);
+                                policy_target_half = Some(filtered.player_target_half_size);
+                                let overlap_like = 1.0
+                                    - ((filtered.fish_center - filtered.player_center).abs()
+                                        / filtered.player_target_half_size.max(1e-4))
+                                    .clamp(0.0, 1.0);
+                                policy_progress = Some(overlap_like);
+
+                                let next_press = action == 1;
+                                if next_press != press {
+                                    if let Some(clicker) = clicker.as_mut() {
+                                        safe_set_press(clicker, next_press);
+                                    }
+                                    press = next_press;
+                                }
+                            }
+
+                            if let Some(b) = br_abs {
+                                if let (Some(tp), Some(bp)) = (yolo_top_draw, yolo_bot_draw) {
+                                    let (p0, p1) = bright_endpoints_along_axis(b, tp, bp);
+                                    bright_p0_draw = Some(p0);
+                                    bright_p1_draw = Some(p1);
+                                }
+                            }
+                            if let Some(f) = fish_abs {
+                                fish_p_draw = Some(Kp {
+                                    x: (f.x + f.w / 2) as f32,
+                                    y: (f.y + f.h / 2) as f32,
+                                });
+                            }
                         } else {
                             let from = bot_state;
                             bot_state = BotState::CollectFish;
@@ -1215,7 +1228,8 @@ pub fn run_detect(
             )?;
         }
 
-        let cap_to_policy_ms = Instant::now().duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
+        let cap_to_policy_ms =
+            Instant::now().duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
 
         let bytes = bgr.data_bytes()?.to_vec();
         let _ = tx.try_send(DetectPacket {
@@ -1242,7 +1256,6 @@ pub fn run_detect(
             fps_det,
             cap_to_policy_ms,
         });
-
     }
 
     if press {
@@ -1254,6 +1267,3 @@ pub fn run_detect(
 
     Ok(())
 }
-
-
-
