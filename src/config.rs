@@ -270,7 +270,7 @@ impl Default for AudioConfig {
             hop: 512,
             bar_count: 48,
             live_seconds: 0.3,
-            poll_ms: 40,
+            poll_ms: 20,
             bite_threshold: 0.65,
             success_threshold: 0.70,
             fail_threshold: 0.65,
