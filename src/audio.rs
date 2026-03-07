@@ -703,7 +703,7 @@ impl AudioEngine {
         }
 
         if total_frames_written == self.last_total_frames_seen {
-            self.clear_disabled_similarities(mask);
+            self.clear_similarities();
             return AudioEvents {
                 bite_hit: false,
                 success_hit: false,
@@ -721,7 +721,7 @@ impl AudioEngine {
         let energy = frame_energy(&mono_raw);
         let min_energy = self.min_energy_for_mask(mask).unwrap_or(0.0);
         if energy < min_energy {
-            self.clear_disabled_similarities(mask);
+            self.clear_similarities();
             return AudioEvents {
                 bite_hit: false,
                 success_hit: false,
