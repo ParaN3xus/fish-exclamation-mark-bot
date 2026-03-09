@@ -4,8 +4,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use crossbeam_channel::{Receiver, Sender, bounded};
-use opencv::core::{self, CV_8UC3, Rect, Scalar};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use opencv::core::{self, Rect, Scalar};
 use opencv::imgproc;
 use opencv::prelude::*;
 use tracing::{error, info, warn};
@@ -17,7 +17,8 @@ use crate::filter::ObservationFilter;
 use crate::policy::{FishingObservation, StochasticOutputFeedbackMpcPolicy};
 use crate::types::{BBox, BotState, DetectCommand, DetectPacket, FramePacket, Kp, TrackState};
 use crate::vision::{
-    YoloOrt, clip_box, detect_bright_fish_strategy, mat_bgra_from_bytes, roi_from_outer_and_kp,
+    BrightFishScratch, YoloOrt, clip_box, detect_bright_fish_strategy, mat_bgra_from_bytes,
+    roi_from_outer_and_kp,
 };
 
 #[derive(Clone)]
@@ -35,7 +36,11 @@ struct YoloOut {
     det: Option<crate::types::OuterDet>,
 }
 
-fn mat_bgr_from_bytes(w: i32, h: i32, bgr: &[u8]) -> Result<Mat> {
+fn mat_bgr_from_bytes<'a>(
+    w: i32,
+    h: i32,
+    bgr: &'a [u8],
+) -> Result<opencv::boxed_ref::BoxedRef<'a, Mat>> {
     if w <= 0 || h <= 0 {
         return Err(anyhow!("invalid bgr frame size: {}x{}", w, h));
     }
@@ -49,9 +54,43 @@ fn mat_bgr_from_bytes(w: i32, h: i32, bgr: &[u8]) -> Result<Mat> {
             h
         ));
     }
-    let mut m = Mat::new_rows_cols_with_default(h, w, CV_8UC3, Scalar::default())?;
-    m.data_bytes_mut()?.copy_from_slice(bgr);
-    Ok(m)
+    Mat::new_rows_cols_with_bytes::<core::VecN<u8, 3>>(h, w, bgr).map_err(Into::into)
+}
+
+fn ensure_bgr_from_bgra(
+    bgra: &(impl MatTraitConst + opencv::core::ToInputArray),
+    bgr: &mut Option<Mat>,
+) -> Result<()> {
+    if bgr.is_none() {
+        let mut out = Mat::default();
+        imgproc::cvt_color(
+            bgra,
+            &mut out,
+            imgproc::COLOR_BGRA2BGR,
+            0,
+            core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+        *bgr = Some(out);
+    }
+    Ok(())
+}
+
+fn ensure_gray_from_bgra(
+    bgra: &(impl MatTraitConst + opencv::core::ToInputArray),
+    gray: &mut Option<Mat>,
+) -> Result<()> {
+    if gray.is_none() {
+        let mut out = Mat::default();
+        imgproc::cvt_color(
+            bgra,
+            &mut out,
+            imgproc::COLOR_BGRA2GRAY,
+            0,
+            core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+        *gray = Some(out);
+    }
+    Ok(())
 }
 
 fn safe_click_once(clicker: &mut VrchatClicker) {
@@ -195,13 +234,14 @@ fn init_track_from_outer(
     gray: &Mat,
     w: i32,
     h: i32,
+    scratch: &mut BrightFishScratch,
 ) -> Result<Option<(TrackState, Option<BBox>, Option<BBox>)>> {
     let roi = clip_box(
         roi_from_outer_and_kp(det_b, det_top, det_bot, w, h, 2),
         w,
         h,
     );
-    let roi_mat = Mat::roi(gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?.try_clone()?;
+    let roi_mat = Mat::roi(gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?;
 
     let outer_local = BBox {
         x: det_b.x - roi.x,
@@ -226,6 +266,7 @@ fn init_track_from_outer(
         None,
         None,
         None,
+        scratch,
     )?;
 
     let br_abs = br.map(|b| BBox {
@@ -261,6 +302,7 @@ pub fn run_detect(
     cfg: Arc<AppConfig>,
     rx: Receiver<FramePacket>,
     tx: Sender<DetectPacket>,
+    rx_ui_buf: Receiver<Vec<u8>>,
     rx_cmd: Receiver<DetectCommand>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -279,6 +321,7 @@ pub fn run_detect(
     let model_path_s = model_path.to_string_lossy().into_owned();
     let (tx_yolo_job, rx_yolo_job) = bounded::<YoloJob>(1);
     let (tx_yolo_out, rx_yolo_out) = bounded::<YoloOut>(1);
+    let (tx_yolo_buf, rx_yolo_buf) = bounded::<Vec<u8>>(1);
     let (tx_yolo_init, rx_yolo_init) = bounded::<Result<()>>(1);
     let yolo_stop = stop.clone();
     let yolo_model = model_path_s.clone();
@@ -300,12 +343,20 @@ pub fn run_detect(
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            let YoloJob {
+                seq,
+                w,
+                h,
+                bgr,
+                conf,
+            } = job;
             let det = (|| -> Result<Option<crate::types::OuterDet>> {
-                let frame = mat_bgr_from_bytes(job.w, job.h, &job.bgr)?;
-                yolo.detect_outer(&frame, job.conf)
+                let frame = mat_bgr_from_bytes(w, h, &bgr)?;
+                yolo.detect_outer(&frame, conf)
             })()
             .unwrap_or(None);
-            let _ = tx_yolo_out.try_send(YoloOut { seq: job.seq, det });
+            let _ = tx_yolo_out.try_send(YoloOut { seq, det });
+            let _ = tx_yolo_buf.try_send(bgr);
         }
     });
     rx_yolo_init.recv()??;
@@ -349,6 +400,9 @@ pub fn run_detect(
     let mut fishing_periodic_last_eval_seq: u64 = 0;
     let mut fishing_periodic_miss_once: bool = false;
     let mut fishing_periodic_retry_after: Option<Instant> = None;
+    let mut fish_scratch = BrightFishScratch::new()?;
+    let mut yolo_submit_buf: Vec<u8> = Vec::new();
+    let mut ui_submit_buf: Vec<u8> = Vec::new();
 
     let detect_fps_limit = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
     let detect_interval = Duration::from_secs_f32(1.0 / detect_fps_limit);
@@ -480,16 +534,14 @@ pub fn run_detect(
                 continue;
             }
         };
-        let mut bgr = Mat::default();
-        if let Err(e) = imgproc::cvt_color(
-            &bgra,
-            &mut bgr,
-            imgproc::COLOR_BGRA2BGR,
-            0,
-            core::AlgorithmHint::ALGO_HINT_DEFAULT,
-        ) {
-            warn!(error = ?e, "drop frame: BGRA->BGR conversion failed");
-            continue;
+        let mut bgr: Option<Mat> = None;
+        let mut gray: Option<Mat> = None;
+
+        while let Ok(buf) = rx_yolo_buf.try_recv() {
+            yolo_submit_buf = buf;
+        }
+        while let Ok(buf) = rx_ui_buf.try_recv() {
+            ui_submit_buf = buf;
         }
 
         let should_submit_yolo = match bot_state {
@@ -500,15 +552,33 @@ pub fn run_detect(
             _ => false,
         };
         if should_submit_yolo {
+            if let Err(e) = ensure_bgr_from_bgra(&bgra, &mut bgr) {
+                warn!(error = ?e, "drop frame: BGRA->BGR conversion failed");
+                continue;
+            }
+            let bgr_src = bgr
+                .as_ref()
+                .expect("bgr just initialized")
+                .data_bytes()
+                .map_err(|e| anyhow!(e.to_string()))?;
+            if yolo_submit_buf.len() != bgr_src.len() {
+                yolo_submit_buf.resize(bgr_src.len(), 0);
+            }
+            yolo_submit_buf.copy_from_slice(bgr_src);
             yolo_submit_seq = yolo_submit_seq.wrapping_add(1);
             let yolo_job = YoloJob {
                 seq: yolo_submit_seq,
                 w: pkt.w,
                 h: pkt.h,
-                bgr: bgr.data_bytes()?.to_vec(),
+                bgr: std::mem::take(&mut yolo_submit_buf),
                 conf: cfg.yolo.conf,
             };
-            let _ = tx_yolo_job.try_send(yolo_job);
+            match tx_yolo_job.try_send(yolo_job) {
+                Ok(()) => {}
+                Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => {
+                    yolo_submit_buf = job.bgr;
+                }
+            }
         }
         while let Ok(out) = rx_yolo_out.try_recv() {
             yolo_latest_seq = out.seq;
@@ -716,16 +786,18 @@ pub fn run_detect(
                             } else if now.duration_since(first_det_at.unwrap_or(now)).as_millis()
                                 >= u128::from(cfg.state_machine.second_detect_delay_ms)
                             {
-                                let mut gray = Mat::default();
-                                imgproc::cvt_color(
-                                    &bgr,
-                                    &mut gray,
-                                    imgproc::COLOR_BGR2GRAY,
-                                    0,
-                                    core::AlgorithmHint::ALGO_HINT_DEFAULT,
-                                )?;
+                                ensure_gray_from_bgra(&bgra, &mut gray)?;
+                                let gray_ref = gray.as_ref().expect("gray just initialized");
                                 if let Some((st, br, fish)) =
-                                    init_track_from_outer(o.b, o.top, o.bot, &gray, pkt.w, pkt.h)?
+                                    init_track_from_outer(
+                                        o.b,
+                                        o.top,
+                                        o.bot,
+                                        gray_ref,
+                                        pkt.w,
+                                        pkt.h,
+                                        &mut fish_scratch,
+                                    )?
                                 {
                                     info!(
                                         roi_x = st.roi.x,
@@ -860,17 +932,11 @@ pub fn run_detect(
 
                     if allow_fishing_detect {
                         if let Some(st) = track_state.as_mut() {
-                            let mut gray = Mat::default();
-                            imgproc::cvt_color(
-                                &bgr,
-                                &mut gray,
-                                imgproc::COLOR_BGR2GRAY,
-                                0,
-                                core::AlgorithmHint::ALGO_HINT_DEFAULT,
-                            )?;
+                            ensure_gray_from_bgra(&bgra, &mut gray)?;
+                            let gray_ref = gray.as_ref().expect("gray just initialized");
                             let roi = clip_box(st.roi, pkt.w, pkt.h);
-                            let roi_mat = Mat::roi(&gray, Rect::new(roi.x, roi.y, roi.w, roi.h))?
-                                .try_clone()?;
+                            let roi_mat =
+                                Mat::roi(gray_ref, Rect::new(roi.x, roi.y, roi.w, roi.h))?;
                             let (br, fish, _pt, _pb, _spec) = detect_bright_fish_strategy(
                                 &roi_mat,
                                 st.outer_rel,
@@ -879,6 +945,7 @@ pub fn run_detect(
                                 Some(st.bright_h_norm.max(8)),
                                 st.fish_spec.as_deref(),
                                 Some((st.proc_top, st.proc_bot)),
+                                &mut fish_scratch,
                             )?;
 
                             yolo_top_draw = Some(Kp {
@@ -1139,9 +1206,15 @@ pub fn run_detect(
             continue;
         }
 
+        if let Err(e) = ensure_bgr_from_bgra(&bgra, &mut bgr) {
+            warn!(error = ?e, "drop frame: BGRA->BGR conversion failed");
+            continue;
+        }
+        let bgr = bgr.as_mut().expect("bgr just initialized");
+
         if let Some(o) = outer_draw {
             imgproc::rectangle(
-                &mut bgr,
+                bgr,
                 Rect::new(o.x, o.y, o.w.max(1), o.h.max(1)),
                 Scalar::new(255.0, 0.0, 0.0, 0.0),
                 2,
@@ -1152,7 +1225,7 @@ pub fn run_detect(
 
         if let Some(sq) = yolo_square_draw {
             imgproc::rectangle(
-                &mut bgr,
+                bgr,
                 Rect::new(sq.x, sq.y, sq.w.max(1), sq.h.max(1)),
                 Scalar::new(255.0, 255.0, 0.0, 0.0),
                 2,
@@ -1165,7 +1238,7 @@ pub fn run_detect(
             let a = opencv::core::Point::new(p0.x.round() as i32, p0.y.round() as i32);
             let b = opencv::core::Point::new(p1.x.round() as i32, p1.y.round() as i32);
             imgproc::line(
-                &mut bgr,
+                bgr,
                 a,
                 b,
                 Scalar::new(0.0, 255.0, 0.0, 0.0),
@@ -1174,7 +1247,7 @@ pub fn run_detect(
                 0,
             )?;
             imgproc::circle(
-                &mut bgr,
+                bgr,
                 a,
                 4,
                 Scalar::new(0.0, 255.0, 0.0, 0.0),
@@ -1183,7 +1256,7 @@ pub fn run_detect(
                 0,
             )?;
             imgproc::circle(
-                &mut bgr,
+                bgr,
                 b,
                 4,
                 Scalar::new(0.0, 255.0, 0.0, 0.0),
@@ -1195,7 +1268,7 @@ pub fn run_detect(
 
         if let Some(fp) = fish_p_draw {
             imgproc::circle(
-                &mut bgr,
+                bgr,
                 opencv::core::Point::new(fp.x.round() as i32, fp.y.round() as i32),
                 5,
                 Scalar::new(0.0, 0.0, 255.0, 0.0),
@@ -1207,7 +1280,7 @@ pub fn run_detect(
 
         if let Some(kp) = yolo_top_draw {
             imgproc::circle(
-                &mut bgr,
+                bgr,
                 opencv::core::Point::new(kp.x.round() as i32, kp.y.round() as i32),
                 5,
                 Scalar::new(255.0, 255.0, 255.0, 0.0),
@@ -1218,7 +1291,7 @@ pub fn run_detect(
         }
         if let Some(kp) = yolo_bot_draw {
             imgproc::circle(
-                &mut bgr,
+                bgr,
                 opencv::core::Point::new(kp.x.round() as i32, kp.y.round() as i32),
                 5,
                 Scalar::new(255.0, 255.0, 255.0, 0.0),
@@ -1231,12 +1304,16 @@ pub fn run_detect(
         let cap_to_policy_ms =
             Instant::now().duration_since(pkt.captured_at).as_secs_f32() * 1000.0;
 
-        let bytes = bgr.data_bytes()?.to_vec();
-        let _ = tx.try_send(DetectPacket {
+        let bgr_src = bgr.data_bytes()?;
+        if ui_submit_buf.len() != bgr_src.len() {
+            ui_submit_buf.resize(bgr_src.len(), 0);
+        }
+        ui_submit_buf.copy_from_slice(bgr_src);
+        let pkt = DetectPacket {
             t_sec: boot.elapsed().as_secs_f64(),
             w: pkt.w,
             h: pkt.h,
-            bgr: bytes,
+            bgr: std::mem::take(&mut ui_submit_buf),
             state: bot_state,
             press,
             state_machine_enabled,
@@ -1255,7 +1332,13 @@ pub fn run_detect(
             fps_cap,
             fps_det,
             cap_to_policy_ms,
-        });
+        };
+        match tx.try_send(pkt) {
+            Ok(()) => {}
+            Err(TrySendError::Full(pkt)) | Err(TrySendError::Disconnected(pkt)) => {
+                ui_submit_buf = pkt.bgr;
+            }
+        }
     }
 
     if press {

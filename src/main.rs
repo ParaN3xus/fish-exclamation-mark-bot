@@ -42,6 +42,7 @@ fn main() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let (tx_cap, rx_cap) = bounded::<FramePacket>(1);
     let (tx_det, rx_det) = bounded::<DetectPacket>(1);
+    let (tx_det_buf, rx_det_buf) = bounded::<Vec<u8>>(1);
     let (tx_cmd, rx_cmd) = bounded::<DetectCommand>(8);
 
     let t1_stop = stop.clone();
@@ -56,13 +57,13 @@ fn main() -> Result<()> {
     let t2_stop = stop.clone();
     let t2_cfg = cfg.clone();
     let t2 = thread::spawn(move || {
-        if let Err(e) = run_detect(t2_cfg, rx_cap, tx_det, rx_cmd, t2_stop.clone()) {
+        if let Err(e) = run_detect(t2_cfg, rx_cap, tx_det, rx_det_buf, rx_cmd, t2_stop.clone()) {
             error!(error = ?e, "detect thread error");
             t2_stop.store(true, Ordering::Relaxed);
         }
     });
 
-    let ui_res = run_ui(rx_det, tx_cmd, stop.clone(), cfg, cfg_path);
+    let ui_res = run_ui(rx_det, tx_det_buf, tx_cmd, stop.clone(), cfg, cfg_path);
     stop.store(true, Ordering::Relaxed);
 
     let _ = t1.join();

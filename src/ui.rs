@@ -62,6 +62,7 @@ struct PreviewApp {
     cfg: Arc<AppConfig>,
     config_path: PathBuf,
     rx: Receiver<DetectPacket>,
+    tx_bgr_recycle: Sender<Vec<u8>>,
     tx_cmd: Sender<DetectCommand>,
     stop: Arc<AtomicBool>,
     texture: Option<egui::TextureHandle>,
@@ -89,6 +90,7 @@ struct PreviewApp {
 impl PreviewApp {
     fn new(
         rx: Receiver<DetectPacket>,
+        tx_bgr_recycle: Sender<Vec<u8>>,
         tx_cmd: Sender<DetectCommand>,
         stop: Arc<AtomicBool>,
         cfg: Arc<AppConfig>,
@@ -99,6 +101,7 @@ impl PreviewApp {
             cfg: cfg.clone(),
             config_path,
             rx,
+            tx_bgr_recycle,
             tx_cmd,
             stop,
             texture: None,
@@ -159,10 +162,12 @@ impl PreviewApp {
     fn ingest_latest_packet(&mut self, ctx: &egui::Context) {
         let mut latest = None;
         while let Ok(pkt) = self.rx.try_recv() {
-            latest = Some(pkt);
+            if let Some(mut old) = latest.replace(pkt) {
+                let _ = self.tx_bgr_recycle.try_send(std::mem::take(&mut old.bgr));
+            }
         }
 
-        let Some(pkt) = latest else {
+        let Some(mut pkt) = latest else {
             return;
         };
 
@@ -247,13 +252,18 @@ impl PreviewApp {
 
         self.trim_history();
 
-        let image = bgr_to_color_image(pkt.w as usize, pkt.h as usize, &pkt.bgr);
-        self.frame_size = Some([pkt.w as usize, pkt.h as usize]);
+        if self.tab == DebugTab::Vision {
+            let image = bgr_to_color_image(pkt.w as usize, pkt.h as usize, &pkt.bgr);
+            self.frame_size = Some([pkt.w as usize, pkt.h as usize]);
 
-        if let Some(tex) = &mut self.texture {
-            tex.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            self.texture = Some(ctx.load_texture("preview", image, egui::TextureOptions::LINEAR));
+            if let Some(tex) = &mut self.texture {
+                tex.set(image, egui::TextureOptions::LINEAR);
+            } else {
+                self.texture =
+                    Some(ctx.load_texture("preview", image, egui::TextureOptions::LINEAR));
+            }
+
+            let _ = self.tx_bgr_recycle.try_send(std::mem::take(&mut pkt.bgr));
         }
     }
 
@@ -715,18 +725,16 @@ impl Drop for GlobalHotkeys {
 }
 
 fn bgr_to_color_image(w: usize, h: usize, bgr: &[u8]) -> egui::ColorImage {
-    let mut rgba = vec![0u8; w * h * 4];
-    for (src, dst) in bgr.chunks_exact(3).zip(rgba.chunks_exact_mut(4)) {
-        dst[0] = src[2];
-        dst[1] = src[1];
-        dst[2] = src[0];
-        dst[3] = 255;
+    let mut pixels = Vec::with_capacity(w.saturating_mul(h));
+    for src in bgr.chunks_exact(3) {
+        pixels.push(egui::Color32::from_rgb(src[2], src[1], src[0]));
     }
-    egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba)
+    egui::ColorImage::new([w, h], pixels)
 }
 
 pub fn run_ui(
     rx: Receiver<DetectPacket>,
+    tx_bgr_recycle: Sender<Vec<u8>>,
     tx_cmd: Sender<DetectCommand>,
     stop: Arc<AtomicBool>,
     cfg: Arc<AppConfig>,
@@ -753,6 +761,7 @@ pub fn run_ui(
         Box::new(move |_cc| {
             Ok(Box::new(PreviewApp::new(
                 rx,
+                tx_bgr_recycle,
                 tx_cmd,
                 app_stop.clone(),
                 cfg.clone(),

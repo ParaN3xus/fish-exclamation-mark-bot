@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Sender, TrySendError};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
@@ -116,12 +116,19 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
 
         let w = w_u as i32;
         let h = h_u as i32;
-        let _ = self.tx.try_send(FramePacket {
+        let pkt = FramePacket {
             w,
             h,
-            bgra: self.scratch.clone(),
+            bgra: std::mem::take(&mut self.scratch),
             captured_at: Instant::now(),
-        });
+        };
+        match self.tx.try_send(pkt) {
+            Ok(()) => {}
+            Err(TrySendError::Full(pkt)) | Err(TrySendError::Disconnected(pkt)) => {
+                // Recover the owned buffer so next frame can reuse allocation.
+                self.scratch = pkt.bgra;
+            }
+        }
         Ok(())
     }
 }

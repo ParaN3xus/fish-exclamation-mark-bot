@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
-use opencv::core::{self, CV_8UC4, Mat, Point, Rect, Scalar, Size};
+use opencv::core::{self, Mat, Point, Rect, Scalar, Size};
+use opencv::core::ToInputArray;
 use opencv::imgproc;
 use opencv::prelude::*;
 use ort::ep::CUDA;
@@ -9,6 +10,11 @@ use std::path::PathBuf;
 use tracing::{info, warn};
 
 use crate::types::{BBox, Kp, OuterDet};
+
+const NORM_W: i32 = 8;
+const NORM_H: i32 = 168;
+const FISH_PATCH_K: usize = 6;
+const FISH_PATCH_LEN: usize = FISH_PATCH_K * FISH_PATCH_K;
 
 pub struct YoloOrt {
     session: Session,
@@ -78,7 +84,7 @@ impl YoloOrt {
         })
     }
 
-    fn centered_square(frame: &Mat) -> Result<(Rect, Mat)> {
+    fn centered_square(frame: &(impl MatTraitConst + ToInputArray)) -> Result<(Rect, Mat)> {
         let w = frame.cols();
         let h = frame.rows();
         if w <= 0 || h <= 0 {
@@ -133,7 +139,11 @@ impl YoloOrt {
         Ok(input)
     }
 
-    pub fn detect_outer(&mut self, frame_bgr: &Mat, conf_thres: f32) -> Result<Option<OuterDet>> {
+    pub fn detect_outer(
+        &mut self,
+        frame_bgr: &(impl MatTraitConst + ToInputArray),
+        conf_thres: f32,
+    ) -> Result<Option<OuterDet>> {
         let (sq_rect, sq) = Self::centered_square(frame_bgr)?;
         let input = self.preprocess(&sq)?;
         let input_tensor = Tensor::<f32>::from_array((
@@ -223,7 +233,7 @@ pub fn roi_from_outer_and_kp(outer: BBox, top: Kp, bot: Kp, w: i32, h: i32, pad:
 }
 
 fn build_strip_by_keypoints(
-    gray: &Mat,
+    gray: &(impl MatTraitConst + ToInputArray),
     outer: BBox,
     top: Kp,
     bot: Kp,
@@ -396,52 +406,77 @@ fn map_norm_box_via_strip(norm_box: BBox, s2i: &[f64; 6], strip_h: i32) -> BBox 
     }
 }
 
-fn patch_spec(norm: &Mat, x: i32, y: i32, k: i32) -> Result<Vec<f32>> {
-    let mut v = vec![0.0f32; (k * k) as usize];
+pub struct BrightFishScratch {
+    blur: Mat,
+    bw: Mat,
+    bw2: Mat,
+    kernel_1x5: Mat,
+}
+
+impl BrightFishScratch {
+    pub fn new() -> Result<Self> {
+        let kernel_1x5 = imgproc::get_structuring_element(
+            imgproc::MORPH_RECT,
+            Size::new(1, 5),
+            Point::new(-1, -1),
+        )?;
+        Ok(Self {
+            blur: Mat::default(),
+            bw: Mat::default(),
+            bw2: Mat::default(),
+            kernel_1x5,
+        })
+    }
+}
+
+fn patch_spec6_from_u8(src: &[u8], step: usize, x: usize, y: usize) -> [f32; FISH_PATCH_LEN] {
+    let mut v = [0.0f32; FISH_PATCH_LEN];
     let mut sum = 0.0f32;
-    for yy in 0..k {
-        for xx in 0..k {
-            let p = *norm.at_2d::<u8>(y + yy, x + xx)? as f32;
-            let i = (yy * k + xx) as usize;
-            v[i] = p;
+    for yy in 0..FISH_PATCH_K {
+        let row_off = (y + yy) * step + x;
+        let dst_row = yy * FISH_PATCH_K;
+        for xx in 0..FISH_PATCH_K {
+            let p = src[row_off + xx] as f32;
+            v[dst_row + xx] = p;
             sum += p;
         }
     }
 
-    let mean = sum / (k * k) as f32;
-    for x in &mut v {
-        *x -= mean;
+    let mean = sum / FISH_PATCH_LEN as f32;
+    for it in &mut v {
+        *it -= mean;
     }
 
     let mut n = 0.0f32;
-    for x in &v {
-        n += *x * *x;
+    for it in &v {
+        n += *it * *it;
     }
     n = n.sqrt().max(1e-6);
 
-    for x in &mut v {
-        *x /= n;
+    for it in &mut v {
+        *it /= n;
     }
 
-    Ok(v)
+    v
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    let mut s = 0.0;
-    for i in 0..a.len() {
+fn dot_spec6(a: &[f32], b: &[f32; FISH_PATCH_LEN]) -> f32 {
+    let mut s = 0.0f32;
+    for i in 0..FISH_PATCH_LEN {
         s += a[i] * b[i];
     }
     s
 }
 
 pub fn detect_bright_fish_strategy(
-    roi_gray: &Mat,
+    roi_gray: &(impl MatTraitConst + ToInputArray),
     outer_local: BBox,
     top_local: Kp,
     bot_local: Kp,
     bright_h_hint: Option<i32>,
     fish_spec_hint: Option<&[f32]>,
     proc_hint: Option<(i32, i32)>,
+    scratch: &mut BrightFishScratch,
 ) -> Result<(Option<BBox>, Option<BBox>, i32, i32, Option<Vec<f32>>)> {
     let Some((strip, s2i, strip_h)) =
         build_strip_by_keypoints(roi_gray, outer_local, top_local, bot_local, 8)?
@@ -453,24 +488,36 @@ pub fn detect_bright_fish_strategy(
     imgproc::resize(
         &strip,
         &mut norm,
-        Size::new(8, 168),
+        Size::new(NORM_W, NORM_H),
         0.0,
         0.0,
         imgproc::INTER_LINEAR,
     )?;
+    let norm_data = norm.data_bytes()?;
+    let norm_step = norm.step1(0)?;
 
-    let proc_top = proc_hint.map(|p| p.0).unwrap_or(0).clamp(0, 167);
-    let proc_bot = proc_hint.map(|p| p.1).unwrap_or(167).clamp(proc_top, 167);
+    let proc_top = proc_hint.map(|p| p.0).unwrap_or(0).clamp(0, NORM_H - 1);
+    let proc_bot = proc_hint
+        .map(|p| p.1)
+        .unwrap_or(NORM_H - 1)
+        .clamp(proc_top, NORM_H - 1);
 
     let mut fish_norm: Option<BBox> = None;
     if let Some(spec) = fish_spec_hint {
-        let k = 6;
+        let k = FISH_PATCH_K as i32;
         let mut best = -1e9f32;
         let mut best_xy = (0, proc_top);
+        if spec.len() < FISH_PATCH_LEN {
+            return Err(anyhow!(
+                "invalid fish spec length: got {}, expect at least {}",
+                spec.len(),
+                FISH_PATCH_LEN
+            ));
+        }
         for y in proc_top..=(proc_bot - k + 1).max(proc_top) {
-            for x in 0..=(8 - k) {
-                let f = patch_spec(&norm, x, y, k)?;
-                let s = dot(spec, &f);
+            for x in 0..=(NORM_W - k) {
+                let f = patch_spec6_from_u8(norm_data, norm_step, x as usize, y as usize);
+                let s = dot_spec6(spec, &f);
                 if s > best {
                     best = s;
                     best_xy = (x, y);
@@ -485,10 +532,9 @@ pub fn detect_bright_fish_strategy(
         });
     }
 
-    let mut blur = Mat::default();
     imgproc::gaussian_blur(
         &norm,
-        &mut blur,
+        &mut scratch.blur,
         Size::new(3, 3),
         0.0,
         0.0,
@@ -496,37 +542,33 @@ pub fn detect_bright_fish_strategy(
         core::AlgorithmHint::ALGO_HINT_DEFAULT,
     )?;
 
-    let mut bw = Mat::default();
     imgproc::threshold(
-        &blur,
-        &mut bw,
+        &scratch.blur,
+        &mut scratch.bw,
         0.0,
         255.0,
         imgproc::THRESH_BINARY | imgproc::THRESH_OTSU,
     )?;
 
-    let mut bw2 = Mat::default();
-    let k =
-        imgproc::get_structuring_element(imgproc::MORPH_RECT, Size::new(1, 5), Point::new(-1, -1))?;
     imgproc::morphology_ex(
-        &bw,
-        &mut bw2,
+        &scratch.bw,
+        &mut scratch.bw2,
         imgproc::MORPH_CLOSE,
-        &k,
+        &scratch.kernel_1x5,
         Point::new(-1, -1),
         1,
         core::BORDER_CONSTANT,
         imgproc::morphology_default_border_value()?,
     )?;
 
-    let mut active = vec![false; 168];
-    for y in 0..168 {
-        if y < proc_top || y > proc_bot {
-            continue;
-        }
+    let bw2_data = scratch.bw2.data_bytes()?;
+    let bw2_step = scratch.bw2.step1(0)?;
+    let mut active = [false; NORM_H as usize];
+    for y in proc_top..=proc_bot {
+        let row_off = y as usize * bw2_step;
         let mut s = 0;
-        for x in 0..8 {
-            if *bw2.at_2d::<u8>(y, x)? > 0 {
+        for x in 0..NORM_W as usize {
+            if bw2_data[row_off + x] > 0 {
                 s += 1;
             }
         }
@@ -645,15 +687,16 @@ pub fn detect_bright_fish_strategy(
     let mut learned_fish_spec = None;
     if fish_spec_hint.is_none() {
         if let Some(br) = bright_norm {
-            let cy = (br.y + br.h / 2).clamp(0, 167);
+            let cy = (br.y + br.h / 2).clamp(0, NORM_H - 1);
             let x0 = 1;
-            let y0 = (cy - 3).clamp(0, 162);
-            learned_fish_spec = Some(patch_spec(&norm, x0, y0, 6)?);
+            let y0 = (cy - 3).clamp(0, NORM_H - FISH_PATCH_K as i32);
+            let learned = patch_spec6_from_u8(norm_data, norm_step, x0 as usize, y0 as usize);
+            learned_fish_spec = Some(learned.to_vec());
             fish_norm = Some(BBox {
                 x: x0,
                 y: y0,
-                w: 6,
-                h: 6,
+                w: FISH_PATCH_K as i32,
+                h: FISH_PATCH_K as i32,
             });
         }
     }
@@ -663,7 +706,11 @@ pub fn detect_bright_fish_strategy(
     Ok((br_abs, fish_abs, proc_top, proc_bot, learned_fish_spec))
 }
 
-pub fn mat_bgra_from_bytes(w: i32, h: i32, bgra: &[u8]) -> Result<Mat> {
+pub fn mat_bgra_from_bytes<'a>(
+    w: i32,
+    h: i32,
+    bgra: &'a [u8],
+) -> Result<opencv::boxed_ref::BoxedRef<'a, Mat>> {
     if w <= 0 || h <= 0 {
         return Err(anyhow!("invalid bgra frame size: {}x{}", w, h));
     }
@@ -679,7 +726,6 @@ pub fn mat_bgra_from_bytes(w: i32, h: i32, bgra: &[u8]) -> Result<Mat> {
             h
         ));
     }
-    let mut m = Mat::new_rows_cols_with_default(h, w, CV_8UC4, Scalar::default())?;
-    m.data_bytes_mut()?.copy_from_slice(bgra);
-    Ok(m)
+    // Zero-copy Mat header over caller-owned BGRA bytes.
+    Mat::new_rows_cols_with_bytes::<core::VecN<u8, 4>>(h, w, bgra).map_err(Into::into)
 }
