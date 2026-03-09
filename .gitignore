@@ -1,2 +1,4 @@
 /target
 /dlls
+/vcpkg_installed
+/vcpkg.json
