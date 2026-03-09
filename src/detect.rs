@@ -322,7 +322,7 @@ pub fn run_detect(
     let mut clicker = match VrchatClicker::new(cfg.as_ref()) {
         Ok(v) => Some(v),
         Err(e) => {
-            warn!(error = ?e, "control init failed; continue without control");
+            warn!(error = ?e, "OSC control init failed; continue without control");
             None
         }
     };
