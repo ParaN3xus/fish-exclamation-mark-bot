@@ -1,7 +1,8 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
@@ -11,6 +12,7 @@ use opencv::prelude::*;
 use tracing::{error, info, warn};
 
 use crate::audio::{AudioEngine, AudioMatchMask};
+use crate::capture::capture_min_interval;
 use crate::config::AppConfig;
 use crate::control::VrchatClicker;
 use crate::filter::ObservationFilter;
@@ -34,6 +36,81 @@ struct YoloJob {
 struct YoloOut {
     seq: u64,
     det: Option<crate::types::OuterDet>,
+}
+
+struct YoloWorker {
+    tx_job: Sender<YoloJob>,
+    rx_out: Receiver<YoloOut>,
+    rx_buf: Receiver<Vec<u8>>,
+    stop_flag: Arc<AtomicBool>,
+    handle: thread::JoinHandle<()>,
+    model_path: String,
+    imgsz: i32,
+    class_id: i32,
+}
+
+fn spawn_yolo_worker(
+    stop: Arc<AtomicBool>,
+    model_path: String,
+    imgsz: i32,
+    class_id: i32,
+) -> Result<YoloWorker> {
+    let (tx_yolo_job, rx_yolo_job) = bounded::<YoloJob>(1);
+    let (tx_yolo_out, rx_yolo_out) = bounded::<YoloOut>(1);
+    let (tx_yolo_buf, rx_yolo_buf) = bounded::<Vec<u8>>(1);
+    let (tx_yolo_init, rx_yolo_init) = bounded::<Result<()>>(1);
+    let worker_stop = Arc::new(AtomicBool::new(false));
+    let worker_stop_c = worker_stop.clone();
+    let yolo_model = model_path.clone();
+    let handle = thread::spawn(move || {
+        let mut yolo = match YoloOrt::new(&yolo_model, imgsz, class_id) {
+            Ok(v) => {
+                let _ = tx_yolo_init.send(Ok(()));
+                v
+            }
+            Err(e) => {
+                let _ = tx_yolo_init.send(Err(e));
+                return;
+            }
+        };
+        while !stop.load(Ordering::Relaxed) && !worker_stop_c.load(Ordering::Relaxed) {
+            let job = match rx_yolo_job.recv_timeout(Duration::from_millis(50)) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let YoloJob {
+                seq,
+                w,
+                h,
+                bgr,
+                conf,
+            } = job;
+            let det = (|| -> Result<Option<crate::types::OuterDet>> {
+                let frame = mat_bgr_from_bytes(w, h, &bgr)?;
+                yolo.detect_outer(&frame, conf)
+            })()
+            .unwrap_or(None);
+            let _ = tx_yolo_out.try_send(YoloOut { seq, det });
+            let _ = tx_yolo_buf.try_send(bgr);
+        }
+    });
+    rx_yolo_init.recv()??;
+
+    Ok(YoloWorker {
+        tx_job: tx_yolo_job,
+        rx_out: rx_yolo_out,
+        rx_buf: rx_yolo_buf,
+        stop_flag: worker_stop,
+        handle,
+        model_path,
+        imgsz,
+        class_id,
+    })
+}
+
+fn stop_yolo_worker(worker: YoloWorker) {
+    worker.stop_flag.store(true, Ordering::Relaxed);
+    let _ = worker.handle.join();
 }
 
 fn mat_bgr_from_bytes<'a>(
@@ -298,8 +375,20 @@ fn init_track_from_outer(
     Ok(Some((state, br_abs, fish_abs)))
 }
 
+fn reload_config_from_disk(cfg_path: &Path, cfg: &mut Arc<AppConfig>) -> Result<()> {
+    let raw =
+        fs::read_to_string(cfg_path).map_err(|e| anyhow!("read {} failed: {e}", cfg_path.display()))?;
+    let new_cfg: AppConfig = toml::from_str(&raw)
+        .map_err(|e| anyhow!("parse {} failed: {e}", cfg_path.display()))?;
+    *cfg = Arc::new(new_cfg);
+    Ok(())
+}
+
 pub fn run_detect(
-    cfg: Arc<AppConfig>,
+    mut cfg: Arc<AppConfig>,
+    cfg_path: PathBuf,
+    capture_min_interval_us: Arc<AtomicU64>,
+    capture_restart_generation: Arc<AtomicU64>,
     rx: Receiver<FramePacket>,
     tx: Sender<DetectPacket>,
     rx_ui_buf: Receiver<Vec<u8>>,
@@ -318,48 +407,12 @@ pub fn run_detect(
         class_id = cfg.yolo.class_id,
         "initializing yolo/ort worker"
     );
-    let model_path_s = model_path.to_string_lossy().into_owned();
-    let (tx_yolo_job, rx_yolo_job) = bounded::<YoloJob>(1);
-    let (tx_yolo_out, rx_yolo_out) = bounded::<YoloOut>(1);
-    let (tx_yolo_buf, rx_yolo_buf) = bounded::<Vec<u8>>(1);
-    let (tx_yolo_init, rx_yolo_init) = bounded::<Result<()>>(1);
-    let yolo_stop = stop.clone();
-    let yolo_model = model_path_s.clone();
-    let yolo_imgsz = cfg.yolo.imgsz;
-    let yolo_class_id = cfg.yolo.class_id;
-    let yolo_handle = thread::spawn(move || {
-        let mut yolo = match YoloOrt::new(&yolo_model, yolo_imgsz, yolo_class_id) {
-            Ok(v) => {
-                let _ = tx_yolo_init.send(Ok(()));
-                v
-            }
-            Err(e) => {
-                let _ = tx_yolo_init.send(Err(e));
-                return;
-            }
-        };
-        while !yolo_stop.load(Ordering::Relaxed) {
-            let job = match rx_yolo_job.recv_timeout(Duration::from_millis(50)) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let YoloJob {
-                seq,
-                w,
-                h,
-                bgr,
-                conf,
-            } = job;
-            let det = (|| -> Result<Option<crate::types::OuterDet>> {
-                let frame = mat_bgr_from_bytes(w, h, &bgr)?;
-                yolo.detect_outer(&frame, conf)
-            })()
-            .unwrap_or(None);
-            let _ = tx_yolo_out.try_send(YoloOut { seq, det });
-            let _ = tx_yolo_buf.try_send(bgr);
-        }
-    });
-    rx_yolo_init.recv()??;
+    let mut yolo_worker = spawn_yolo_worker(
+        stop.clone(),
+        model_path.to_string_lossy().into_owned(),
+        cfg.yolo.imgsz,
+        cfg.yolo.class_id,
+    )?;
     info!("yolo/ort worker ready");
 
     let mut audio = match AudioEngine::new(cfg.as_ref(), &exe_dir) {
@@ -404,12 +457,10 @@ pub fn run_detect(
     let mut yolo_submit_buf: Vec<u8> = Vec::new();
     let mut ui_submit_buf: Vec<u8> = Vec::new();
 
-    let detect_fps_limit = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
-    let detect_interval = Duration::from_secs_f32(1.0 / detect_fps_limit);
-    let detect_sleep_interval = Duration::from_millis(cfg.loop_timing.detect_sleep_ms);
     let mut last_det_tick: Option<Instant> = None;
     let mut last_cap_tick: Option<Instant> = None;
-    let mut last_pipeline_tick = Instant::now() - detect_interval;
+    let mut last_pipeline_tick =
+        Instant::now() - Duration::from_millis(cfg.loop_timing.detect_sleep_ms.max(1));
     let boot = Instant::now();
 
     while !stop.load(Ordering::Relaxed) {
@@ -421,6 +472,9 @@ pub fn run_detect(
         };
 
         let now = Instant::now();
+        let detect_fps_limit = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
+        let detect_interval = Duration::from_secs_f32(1.0 / detect_fps_limit);
+        let detect_sleep_interval = Duration::from_millis(cfg.loop_timing.detect_sleep_ms);
         let pipeline_min_interval = match bot_state {
             BotState::Fishing => detect_interval.max(detect_sleep_interval),
             _ => detect_sleep_interval,
@@ -537,7 +591,7 @@ pub fn run_detect(
         let mut bgr: Option<Mat> = None;
         let mut gray: Option<Mat> = None;
 
-        while let Ok(buf) = rx_yolo_buf.try_recv() {
+        while let Ok(buf) = yolo_worker.rx_buf.try_recv() {
             yolo_submit_buf = buf;
         }
         while let Ok(buf) = rx_ui_buf.try_recv() {
@@ -573,14 +627,14 @@ pub fn run_detect(
                 bgr: std::mem::take(&mut yolo_submit_buf),
                 conf: cfg.yolo.conf,
             };
-            match tx_yolo_job.try_send(yolo_job) {
+            match yolo_worker.tx_job.try_send(yolo_job) {
                 Ok(()) => {}
                 Err(TrySendError::Full(job)) | Err(TrySendError::Disconnected(job)) => {
                     yolo_submit_buf = job.bgr;
                 }
             }
         }
-        while let Ok(out) = rx_yolo_out.try_recv() {
+        while let Ok(out) = yolo_worker.rx_out.try_recv() {
             yolo_latest_seq = out.seq;
             yolo_latest_det = out.det;
         }
@@ -678,6 +732,95 @@ pub fn run_detect(
                         state = state_name(bot_state),
                         "state machine toggled"
                     );
+                }
+                DetectCommand::ReloadConfig => {
+                    match reload_config_from_disk(&cfg_path, &mut cfg) {
+                        Ok(()) => {
+                            let cap_interval = capture_min_interval(cfg.as_ref());
+                            capture_min_interval_us
+                                .store(cap_interval.as_micros() as u64, Ordering::Relaxed);
+                            capture_restart_generation.fetch_add(1, Ordering::Relaxed);
+
+                            let old_audio = audio.take();
+                            audio = match AudioEngine::new(cfg.as_ref(), &exe_dir) {
+                                Ok(v) => Some(v),
+                                Err(e) => {
+                                    warn!(
+                                        error = ?e,
+                                        "audio reinit failed after config hot-reload; keeping previous audio engine"
+                                    );
+                                    old_audio
+                                }
+                            };
+
+                            if press {
+                                if let Some(c) = clicker.as_mut() {
+                                    safe_set_press(c, false);
+                                }
+                                press = false;
+                            }
+                            let old_clicker = clicker.take();
+                            clicker = match VrchatClicker::new(cfg.as_ref()) {
+                                Ok(v) => Some(v),
+                                Err(e) => {
+                                    warn!(
+                                        error = ?e,
+                                        "control reinit failed after config hot-reload; keeping previous control"
+                                    );
+                                    old_clicker
+                                }
+                            };
+
+                            let new_model = cfg.model_path(&exe_dir).to_string_lossy().into_owned();
+                            let yolo_changed = new_model != yolo_worker.model_path
+                                || cfg.yolo.imgsz != yolo_worker.imgsz
+                                || cfg.yolo.class_id != yolo_worker.class_id;
+                            if yolo_changed {
+                                match spawn_yolo_worker(
+                                    stop.clone(),
+                                    new_model.clone(),
+                                    cfg.yolo.imgsz,
+                                    cfg.yolo.class_id,
+                                ) {
+                                    Ok(new_worker) => {
+                                        let old_worker =
+                                            std::mem::replace(&mut yolo_worker, new_worker);
+                                        stop_yolo_worker(old_worker);
+                                        yolo_latest_det = None;
+                                        yolo_latest_seq = 0;
+                                        yolo_submit_seq = 0;
+                                        yolo_submit_buf.clear();
+                                        info!(
+                                            model = %new_model,
+                                            imgsz = cfg.yolo.imgsz,
+                                            class_id = cfg.yolo.class_id,
+                                            "yolo worker hot-reloaded"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            error = ?e,
+                                            model = %new_model,
+                                            imgsz = cfg.yolo.imgsz,
+                                            class_id = cfg.yolo.class_id,
+                                            "yolo worker hot-reload failed; keeping previous worker"
+                                        );
+                                    }
+                                }
+                            }
+
+                            policy = None;
+                            obs_filter = None;
+                            last_obs_tick = None;
+
+                            info!(path = %cfg_path.display(), "config hot-reloaded");
+                        }
+                        Err(e) => warn!(
+                            path = %cfg_path.display(),
+                            error = ?e,
+                            "config hot-reload failed"
+                        ),
+                    }
                 }
             }
         }
@@ -1321,6 +1464,10 @@ pub fn run_detect(
             success_similarity: audio_events.success_similarity,
             fail_similarity: audio_events.fail_similarity,
             collected_similarity: audio_events.collected_similarity,
+            bite_threshold: cfg.audio.bite_threshold,
+            success_threshold: cfg.audio.success_threshold,
+            fail_threshold: cfg.audio.fail_threshold,
+            collected_threshold: cfg.audio.collected_threshold,
             bite_hit: audio_events.bite_hit,
             success_hit: audio_events.success_hit,
             fail_hit: audio_events.fail_hit,
@@ -1329,6 +1476,7 @@ pub fn run_detect(
             policy_player_center,
             policy_progress,
             policy_target_half,
+            policy_default_target_half: cfg.policy.fish_target_half_size,
             fps_cap,
             fps_det,
             cap_to_policy_ms,
@@ -1346,7 +1494,7 @@ pub fn run_detect(
             safe_set_press(clicker, false);
         }
     }
-    let _ = yolo_handle.join();
+    stop_yolo_worker(yolo_worker);
 
     Ok(())
 }

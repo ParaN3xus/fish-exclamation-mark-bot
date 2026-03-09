@@ -189,6 +189,11 @@ impl PreviewApp {
             fail: pkt.fail_similarity as f64,
             collected: pkt.collected_similarity as f64,
         });
+        self.th_bite = pkt.bite_threshold as f64;
+        self.th_success = pkt.success_threshold as f64;
+        self.th_fail = pkt.fail_threshold as f64;
+        self.th_collected = pkt.collected_threshold as f64;
+        self.default_target_half = pkt.policy_default_target_half as f64;
 
         if pkt.bite_hit {
             self.audio_events.push_back(AudioEvent {

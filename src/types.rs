@@ -44,6 +44,7 @@ pub enum BotState {
 pub enum DetectCommand {
     ForceFishComes,
     Reset,
+    ReloadConfig,
     ToggleStateMachine,
 }
 
@@ -60,6 +61,10 @@ pub struct DetectPacket {
     pub success_similarity: f32,
     pub fail_similarity: f32,
     pub collected_similarity: f32,
+    pub bite_threshold: f32,
+    pub success_threshold: f32,
+    pub fail_threshold: f32,
+    pub collected_threshold: f32,
     pub bite_hit: bool,
     pub success_hit: bool,
     pub fail_hit: bool,
@@ -68,6 +73,7 @@ pub struct DetectPacket {
     pub policy_player_center: Option<f32>,
     pub policy_progress: Option<f32>,
     pub policy_target_half: Option<f32>,
+    pub policy_default_target_half: f32,
     pub fps_cap: f32,
     pub fps_det: f32,
     pub cap_to_policy_ms: f32,

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,14 +24,26 @@ struct CaptureFlags {
     tx: Sender<FramePacket>,
     stop: Arc<AtomicBool>,
     min_interval: Duration,
+    min_interval_us: Arc<AtomicU64>,
+    restart_generation: Arc<AtomicU64>,
+    session_generation: u64,
 }
 
 struct CaptureWorker {
     tx: Sender<FramePacket>,
     stop: Arc<AtomicBool>,
-    min_interval: Duration,
+    min_interval_us: Arc<AtomicU64>,
+    restart_generation: Arc<AtomicU64>,
+    session_generation: u64,
     last_sent: Instant,
     scratch: Vec<u8>,
+}
+
+pub fn capture_min_interval(cfg: &AppConfig) -> Duration {
+    let capture_interval = Duration::from_millis(cfg.loop_timing.capture_sleep_ms);
+    let detect_fps = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
+    let detect_interval = Duration::from_secs_f32(1.0 / detect_fps);
+    capture_interval.max(detect_interval)
 }
 
 impl GraphicsCaptureApiHandler for CaptureWorker {
@@ -42,7 +54,9 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
         Ok(Self {
             tx: ctx.flags.tx,
             stop: ctx.flags.stop,
-            min_interval: ctx.flags.min_interval,
+            min_interval_us: ctx.flags.min_interval_us,
+            restart_generation: ctx.flags.restart_generation,
+            session_generation: ctx.flags.session_generation,
             last_sent: Instant::now() - ctx.flags.min_interval,
             scratch: Vec::new(),
         })
@@ -53,12 +67,19 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
         frame: &mut Frame,
         capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
+        if self.restart_generation.load(Ordering::Relaxed) != self.session_generation {
+            let _ = capture_control.stop();
+            return Ok(());
+        }
+
         if self.stop.load(Ordering::Relaxed) {
             let _ = capture_control.stop();
             return Ok(());
         }
 
-        if self.last_sent.elapsed() < self.min_interval {
+        let min_interval =
+            Duration::from_micros(self.min_interval_us.load(Ordering::Relaxed).max(1));
+        if self.last_sent.elapsed() < min_interval {
             return Ok(());
         }
         self.last_sent = Instant::now();
@@ -133,7 +154,13 @@ impl GraphicsCaptureApiHandler for CaptureWorker {
     }
 }
 
-pub fn run_capture(cfg: Arc<AppConfig>, tx: Sender<FramePacket>, stop: Arc<AtomicBool>) -> Result<()> {
+pub fn run_capture(
+    _cfg: Arc<AppConfig>,
+    tx: Sender<FramePacket>,
+    stop: Arc<AtomicBool>,
+    min_interval_us: Arc<AtomicU64>,
+    restart_generation: Arc<AtomicU64>,
+) -> Result<()> {
     let mut last_no_window_log = Instant::now() - Duration::from_secs(10);
 
     while !stop.load(Ordering::Relaxed) {
@@ -156,12 +183,10 @@ pub fn run_capture(cfg: Arc<AppConfig>, tx: Sender<FramePacket>, stop: Arc<Atomi
         let flags = CaptureFlags {
             tx: tx.clone(),
             stop: stop.clone(),
-            min_interval: {
-                let capture_interval = Duration::from_millis(cfg.loop_timing.capture_sleep_ms);
-                let detect_fps = cfg.state_machine.fishing_detect_fps_limit.max(1.0);
-                let detect_interval = Duration::from_secs_f32(1.0 / detect_fps);
-                capture_interval.max(detect_interval)
-            },
+            min_interval: Duration::from_micros(min_interval_us.load(Ordering::Relaxed).max(1)),
+            min_interval_us: min_interval_us.clone(),
+            restart_generation: restart_generation.clone(),
+            session_generation: restart_generation.load(Ordering::Relaxed),
         };
 
         let settings = Settings::new(
