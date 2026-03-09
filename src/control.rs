@@ -48,7 +48,7 @@ pub struct VrchatClicker {
     client: Arc<VRChatOSC>,
     osc_target: SocketAddr,
     click_hold_ms: u64,
-    shake_head_time_s: f32,
+    jump_press_time_s: f32,
     mouse_sender: WindowMessageMouseSender,
     desired_pressed: bool,
     actual_pressed: bool,
@@ -69,7 +69,7 @@ impl VrchatClicker {
             client,
             osc_target,
             click_hold_ms: cfg.control.click_hold_ms,
-            shake_head_time_s: cfg.control.shake_head_time_s,
+            jump_press_time_s: cfg.control.jump_press_time_s,
             mouse_sender: WindowMessageMouseSender::new(),
             desired_pressed: false,
             actual_pressed: false,
@@ -83,25 +83,16 @@ impl VrchatClicker {
         Ok(())
     }
 
-    pub fn shake_head(&self) -> Result<()> {
-        let t = self.shake_head_time_s;
+    pub fn jump(&self) -> Result<()> {
+        let t = self.jump_press_time_s;
         if t <= 0.0 {
             return Ok(());
         }
-        let d1 = Duration::from_secs_f32(t);
-        let d2 = Duration::from_secs_f32((t * 2.0).max(0.0));
+        let d = Duration::from_secs_f32(t);
 
-        self.send_button("/input/LookLeft", true)?;
-        thread::sleep(d1);
-        self.send_button("/input/LookLeft", false)?;
-
-        self.send_button("/input/LookRight", true)?;
-        thread::sleep(d2);
-        self.send_button("/input/LookRight", false)?;
-
-        self.send_button("/input/LookLeft", true)?;
-        thread::sleep(d1);
-        self.send_button("/input/LookLeft", false)?;
+        self.send_button("/input/Jump", true)?;
+        thread::sleep(d);
+        self.send_button("/input/Jump", false)?;
         Ok(())
     }
 

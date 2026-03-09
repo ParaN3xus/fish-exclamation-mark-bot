@@ -297,7 +297,7 @@ pub struct ControlConfig {
     pub osc_target_host: String,
     pub osc_target_port: u16,
     pub click_hold_ms: u64,
-    pub shake_head_time_s: f32,
+    pub jump_press_time_s: f32,
 }
 
 impl Default for ControlConfig {
@@ -306,7 +306,7 @@ impl Default for ControlConfig {
             osc_target_host: "127.0.0.1".to_string(),
             osc_target_port: 9000,
             click_hold_ms: 50,
-            shake_head_time_s: 0.01,
+            jump_press_time_s: 0.01,
         }
     }
 }

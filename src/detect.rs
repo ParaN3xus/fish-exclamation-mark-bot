@@ -72,9 +72,9 @@ fn safe_poll_focus(clicker: &mut VrchatClicker) {
     }
 }
 
-fn safe_shake_head(clicker: &mut VrchatClicker) {
-    if let Err(e) = clicker.shake_head() {
-        error!(error = ?e, "control shake_head failed");
+fn safe_jump(clicker: &mut VrchatClicker) {
+    if let Err(e) = clicker.jump() {
+        error!(error = ?e, "control jump failed");
     }
 }
 
@@ -654,7 +654,7 @@ pub fn run_detect(
                     {
                         if let Some(clicker) = clicker.as_mut() {
                             info!("waiting timeout: shake head before transition");
-                            safe_shake_head(clicker);
+                            safe_jump(clicker);
                         }
                         let from = bot_state;
                         bot_state = BotState::BiteOrError;
