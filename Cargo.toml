@@ -3,6 +3,13 @@ name = "fish-exclimation-mark-bot"
 version = "0.3.0"
 edition = "2024"
 
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
+lto = "off"
+codegen-units = 1
+
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.5.60", features = ["derive"] }
