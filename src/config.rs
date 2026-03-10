@@ -221,7 +221,7 @@ impl Default for StateMachineConfig {
             fishing_timeout_ms: 60_000,
             fishing_yolo_check_ms: 500,
             fishing_detect_fps_limit: 60.0,
-            wait_after_jump_ms: 1_000,
+            wait_after_jump_ms: 1_600,
             result_action_wait_ms: 1_000,
         }
     }
