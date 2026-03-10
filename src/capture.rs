@@ -7,7 +7,7 @@ use anyhow::Result;
 use crossbeam_channel::{Sender, TrySendError};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
-use windows_capture::graphics_capture_api::InternalCaptureControl;
+use windows_capture::graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl};
 use windows_capture::settings::{
     ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
@@ -189,12 +189,22 @@ pub fn run_capture(
             session_generation: restart_generation.load(Ordering::Relaxed),
         };
 
+        let min_update_interval = if GraphicsCaptureApi::is_minimum_update_interval_supported().unwrap_or(false) {
+            MinimumUpdateIntervalSettings::Custom(flags.min_interval)
+        } else {
+            warn!(
+                min_interval = ?flags.min_interval,
+                "GraphicsCaptureSession.MinUpdateInterval unsupported on this Windows version; falling back to default"
+            );
+            MinimumUpdateIntervalSettings::Default
+        };
+
         let settings = Settings::new(
             window,
             CursorCaptureSettings::Default,
             DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Custom(flags.min_interval),
+            min_update_interval,
             DirtyRegionSettings::Default,
             ColorFormat::Bgra8,
             flags,
