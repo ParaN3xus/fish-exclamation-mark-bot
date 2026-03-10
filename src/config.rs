@@ -208,6 +208,7 @@ pub struct StateMachineConfig {
     pub fishing_timeout_ms: u64,
     pub fishing_yolo_check_ms: u64,
     pub fishing_detect_fps_limit: f32,
+    pub wait_after_jump_ms: u64,
     pub result_action_wait_ms: u64,
 }
 
@@ -220,6 +221,7 @@ impl Default for StateMachineConfig {
             fishing_timeout_ms: 60_000,
             fishing_yolo_check_ms: 500,
             fishing_detect_fps_limit: 60.0,
+            wait_after_jump_ms: 1_000,
             result_action_wait_ms: 1_000,
         }
     }

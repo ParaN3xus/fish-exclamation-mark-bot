@@ -866,8 +866,12 @@ pub fn run_detect(
                         >= u128::from(cfg.state_machine.wait_bite_timeout_ms)
                     {
                         if let Some(clicker) = clicker.as_mut() {
-                            info!("waiting timeout: shake head before transition");
+                            info!("waiting timeout: jump before transition");
                             safe_jump(clicker);
+                            // Give jump action time to settle before state transition.
+                            thread::sleep(Duration::from_millis(
+                                cfg.state_machine.wait_after_jump_ms,
+                            ));
                         }
                         let from = bot_state;
                         bot_state = BotState::BiteOrError;
