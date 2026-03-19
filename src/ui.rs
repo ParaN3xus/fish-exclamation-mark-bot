@@ -796,7 +796,21 @@ fn current_viewport_inner_size(ctx: &egui::Context) -> Option<[f32; 2]> {
 }
 
 fn save_startup_window_size(config_path: &Path, cfg: &AppConfig, size: [f32; 2]) -> Result<()> {
-    let mut next = cfg.clone();
+    let mut next = match fs::read_to_string(config_path) {
+        Ok(raw) => match toml::from_str::<AppConfig>(&raw) {
+            Ok(current) => current,
+            Err(e) => {
+                warn!(
+                    error = ?e,
+                    path = %config_path.display(),
+                    "failed to parse current config while persisting window size; falling back to in-memory config"
+                );
+                cfg.clone()
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => cfg.clone(),
+        Err(e) => return Err(e.into()),
+    };
     next.startup.ui_window_width = size[0];
     next.startup.ui_window_height = size[1];
     let text = toml::to_string_pretty(&next)?;
