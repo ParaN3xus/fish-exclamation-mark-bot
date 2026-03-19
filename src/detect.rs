@@ -176,6 +176,12 @@ fn safe_click_once(clicker: &mut VrchatClicker) {
     }
 }
 
+fn safe_cancel_pending_actions(clicker: &mut VrchatClicker) {
+    if let Err(e) = clicker.cancel_pending_actions() {
+        error!(error = ?e, "control cancel_pending_actions failed");
+    }
+}
+
 fn safe_set_press(clicker: &mut VrchatClicker, press: bool) {
     if let Err(e) = clicker.set_press(press) {
         error!(error = ?e, press, "control set_press failed");
@@ -453,6 +459,7 @@ pub fn run_detect(
     let mut fishing_periodic_last_eval_seq: u64 = 0;
     let mut fishing_periodic_miss_once: bool = false;
     let mut fishing_periodic_retry_after: Option<Instant> = None;
+    let mut waiting_timeout_transition_at: Option<Instant> = None;
     let mut fish_scratch = BrightFishScratch::new()?;
     let mut yolo_submit_buf: Vec<u8> = Vec::new();
     let mut ui_submit_buf: Vec<u8> = Vec::new();
@@ -481,11 +488,6 @@ pub fn run_detect(
         };
         let elapsed = now.duration_since(last_pipeline_tick);
         if elapsed < pipeline_min_interval {
-            let remain = pipeline_min_interval - elapsed;
-            let sleep_for = remain;
-            if !sleep_for.is_zero() {
-                thread::sleep(sleep_for);
-            }
             continue;
         }
         last_pipeline_tick = now;
@@ -667,6 +669,7 @@ pub fn run_detect(
                     fishing_periodic_pending = false;
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
+                    waiting_timeout_transition_at = None;
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -691,6 +694,7 @@ pub fn run_detect(
                     fishing_periodic_pending = false;
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
+                    waiting_timeout_transition_at = None;
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -716,16 +720,21 @@ pub fn run_detect(
                         fishing_periodic_pending = false;
                         fishing_periodic_miss_once = false;
                         fishing_periodic_retry_after = None;
+                        waiting_timeout_transition_at = None;
                         bot_state = BotState::Stopped;
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
                                 safe_set_press(clicker, false);
+                                safe_cancel_pending_actions(clicker);
                             }
                             press = false;
+                        } else if let Some(clicker) = clicker.as_mut() {
+                            safe_cancel_pending_actions(clicker);
                         }
                     } else if bot_state == BotState::Stopped {
                         bot_state = BotState::WaitingFish;
                         state_entered_at = None;
+                        waiting_timeout_transition_at = None;
                     }
                     info!(
                         enabled = state_machine_enabled,
@@ -756,8 +765,11 @@ pub fn run_detect(
                             if press {
                                 if let Some(c) = clicker.as_mut() {
                                     safe_set_press(c, false);
+                                    safe_cancel_pending_actions(c);
                                 }
                                 press = false;
+                            } else if let Some(c) = clicker.as_mut() {
+                                safe_cancel_pending_actions(c);
                             }
                             let old_clicker = clicker.take();
                             clicker = match VrchatClicker::new(cfg.as_ref()) {
@@ -828,7 +840,11 @@ pub fn run_detect(
         if state_machine_enabled {
             match bot_state {
                 BotState::WaitingFish => {
-                    status_text = "WaitingFish".to_string();
+                    status_text = if waiting_timeout_transition_at.is_some() {
+                        "WaitingFish (waiting after jump)".to_string()
+                    } else {
+                        "WaitingFish".to_string()
+                    };
                     if state_entered_at.is_none() {
                         state_entered_at = Some(now);
                         info!("entered WaitingFish");
@@ -843,14 +859,21 @@ pub fn run_detect(
                     fishing_periodic_pending = false;
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
+                    if bot_state != BotState::WaitingFish {
+                        waiting_timeout_transition_at = None;
+                    }
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
+                            safe_cancel_pending_actions(clicker);
                         }
                         press = false;
+                    } else if let Some(clicker) = clicker.as_mut() {
+                        safe_cancel_pending_actions(clicker);
                     }
 
                     if audio_events.bite_hit {
+                        waiting_timeout_transition_at = None;
                         let from = bot_state;
                         bot_state = BotState::BiteOrError;
                         log_transition(
@@ -860,19 +883,10 @@ pub fn run_detect(
                             &mut status_text,
                             &mut state_entered_at,
                         );
-                    } else if now
-                        .duration_since(state_entered_at.unwrap_or(now))
-                        .as_millis()
-                        >= u128::from(cfg.state_machine.wait_bite_timeout_ms)
+                    } else if waiting_timeout_transition_at
+                        .is_some_and(|transition_at| now >= transition_at)
                     {
-                        if let Some(clicker) = clicker.as_mut() {
-                            info!("waiting timeout: jump before transition");
-                            safe_jump(clicker);
-                            // Give jump action time to settle before state transition.
-                            thread::sleep(Duration::from_millis(
-                                cfg.state_machine.wait_after_jump_ms,
-                            ));
-                        }
+                        waiting_timeout_transition_at = None;
                         let from = bot_state;
                         bot_state = BotState::BiteOrError;
                         log_transition(
@@ -882,6 +896,32 @@ pub fn run_detect(
                             &mut status_text,
                             &mut state_entered_at,
                         );
+                    } else if now
+                        .duration_since(state_entered_at.unwrap_or(now))
+                        .as_millis()
+                        >= u128::from(cfg.state_machine.wait_bite_timeout_ms)
+                    {
+                        if waiting_timeout_transition_at.is_none() {
+                            if let Some(clicker) = clicker.as_mut() {
+                                info!("waiting timeout: jump before transition");
+                                safe_jump(clicker);
+                            }
+                            let wait_after_jump =
+                                Duration::from_millis(cfg.state_machine.wait_after_jump_ms);
+                            if clicker.is_some() && !wait_after_jump.is_zero() {
+                                waiting_timeout_transition_at = Some(now + wait_after_jump);
+                            } else {
+                                let from = bot_state;
+                                bot_state = BotState::BiteOrError;
+                                log_transition(
+                                    from,
+                                    bot_state,
+                                    "WaitingFish timeout",
+                                    &mut status_text,
+                                    &mut state_entered_at,
+                                );
+                            }
+                        }
                     }
                 }
                 BotState::BiteOrError => {
@@ -899,8 +939,11 @@ pub fn run_detect(
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
                                 safe_set_press(clicker, false);
+                                safe_cancel_pending_actions(clicker);
                             }
                             press = false;
+                        } else if let Some(clicker) = clicker.as_mut() {
+                            safe_cancel_pending_actions(clicker);
                         }
                         if let Some(clicker) = clicker.as_mut() {
                             info!("bite-or-error action: click once");
@@ -1049,8 +1092,11 @@ pub fn run_detect(
                                 if press {
                                     if let Some(clicker) = clicker.as_mut() {
                                         safe_set_press(clicker, false);
+                                        safe_cancel_pending_actions(clicker);
                                     }
                                     press = false;
+                                } else if let Some(clicker) = clicker.as_mut() {
+                                    safe_cancel_pending_actions(clicker);
                                 }
                                 bot_state = BotState::CollectFish;
                                 log_transition(
@@ -1231,8 +1277,11 @@ pub fn run_detect(
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
                                 safe_set_press(clicker, false);
+                                safe_cancel_pending_actions(clicker);
                             }
                             press = false;
+                        } else if let Some(clicker) = clicker.as_mut() {
+                            safe_cancel_pending_actions(clicker);
                         }
                         bot_state = BotState::CollectFish;
                         log_transition(
@@ -1246,8 +1295,11 @@ pub fn run_detect(
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
                                 safe_set_press(clicker, false);
+                                safe_cancel_pending_actions(clicker);
                             }
                             press = false;
+                        } else if let Some(clicker) = clicker.as_mut() {
+                            safe_cancel_pending_actions(clicker);
                         }
                         bot_state = BotState::ReleaseLine;
                         let reason = if audio_events.collected_hit {

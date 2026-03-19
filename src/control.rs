@@ -1,7 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::runtime::Runtime;
@@ -52,6 +51,8 @@ pub struct VrchatClicker {
     mouse_sender: WindowMessageMouseSender,
     desired_pressed: bool,
     actual_pressed: bool,
+    pending_use_release_at: Option<Instant>,
+    pending_jump_release_at: Option<Instant>,
 }
 
 impl VrchatClicker {
@@ -73,17 +74,21 @@ impl VrchatClicker {
             mouse_sender: WindowMessageMouseSender::new(),
             desired_pressed: false,
             actual_pressed: false,
+            pending_use_release_at: None,
+            pending_jump_release_at: None,
         })
     }
 
     pub fn click_once(&mut self) -> Result<()> {
+        self.pump_pending_actions()?;
         self.send_use(true)?;
-        thread::sleep(Duration::from_millis(self.click_hold_ms));
-        self.send_use(false)?;
+        self.pending_use_release_at =
+            Some(Instant::now() + Duration::from_millis(self.click_hold_ms));
         Ok(())
     }
 
-    pub fn jump(&self) -> Result<()> {
+    pub fn jump(&mut self) -> Result<()> {
+        self.pump_pending_actions()?;
         let t = self.jump_press_time_s;
         if t <= 0.0 {
             return Ok(());
@@ -91,18 +96,46 @@ impl VrchatClicker {
         let d = Duration::from_secs_f32(t);
 
         self.send_button("/input/Jump", true)?;
-        thread::sleep(d);
-        self.send_button("/input/Jump", false)?;
+        self.pending_jump_release_at = Some(Instant::now() + d);
         Ok(())
     }
 
     pub fn poll_focus(&mut self) -> Result<()> {
-        Ok(())
+        self.pump_pending_actions()
     }
 
     pub fn set_press(&mut self, press: bool) -> Result<()> {
         self.desired_pressed = press;
         self.sync_mouse_state()
+    }
+
+    pub fn cancel_pending_actions(&mut self) -> Result<()> {
+        if self.pending_use_release_at.take().is_some() {
+            self.send_use(false)?;
+        }
+        if self.pending_jump_release_at.take().is_some() {
+            self.send_button("/input/Jump", false)?;
+        }
+        Ok(())
+    }
+
+    pub fn pump_pending_actions(&mut self) -> Result<()> {
+        let now = Instant::now();
+        if self
+            .pending_use_release_at
+            .is_some_and(|release_at| now >= release_at)
+        {
+            self.send_use(false)?;
+            self.pending_use_release_at = None;
+        }
+        if self
+            .pending_jump_release_at
+            .is_some_and(|release_at| now >= release_at)
+        {
+            self.send_button("/input/Jump", false)?;
+            self.pending_jump_release_at = None;
+        }
+        Ok(())
     }
 
     fn sync_mouse_state(&mut self) -> Result<()> {
@@ -130,6 +163,7 @@ impl VrchatClicker {
 
 impl Drop for VrchatClicker {
     fn drop(&mut self) {
+        let _ = self.cancel_pending_actions();
         self.desired_pressed = false;
         let _ = self.sync_mouse_state();
         let _ = self.rt.block_on(self.client.shutdown());
