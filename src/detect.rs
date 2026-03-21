@@ -223,6 +223,23 @@ fn safe_jump(clicker: &mut VrchatClicker) {
     }
 }
 
+fn safe_set_chatbox_typing(clicker: &mut VrchatClicker, typing: bool) {
+    if let Err(e) = clicker.set_chatbox_typing(typing) {
+        error!(error = ?e, typing, "control set_chatbox_typing failed");
+    }
+}
+
+fn safe_send_chatbox_input(
+    clicker: &mut VrchatClicker,
+    text: &str,
+    send_immediately: bool,
+    trigger_sfx: bool,
+) {
+    if let Err(e) = clicker.send_chatbox_input(text, send_immediately, trigger_sfx) {
+        error!(error = ?e, "control send_chatbox_input failed");
+    }
+}
+
 fn state_name(state: BotState) -> &'static str {
     match state {
         BotState::Stopped => "Stopped",
@@ -484,6 +501,7 @@ pub fn run_detect(
     let mut fishing_periodic_miss_once: bool = false;
     let mut fishing_periodic_retry_after: Option<Instant> = None;
     let mut waiting_timeout_transition_at: Option<Instant> = None;
+    let mut last_chatbox_sent_at: Option<Instant> = None;
     let mut fish_scratch = BrightFishScratch::new()?;
     let mut yolo_submit_buf: Vec<u8> = Vec::new();
     let mut ui_submit_buf: Vec<u8> = Vec::new();
@@ -599,6 +617,32 @@ pub fn run_detect(
 
         if let Some(clicker) = clicker.as_mut() {
             safe_poll_focus(clicker);
+        }
+
+        if cfg.control.chatbox_enabled && state_machine_enabled {
+            let interval = Duration::from_millis(cfg.control.chatbox_interval_ms.max(1));
+            let should_send_chatbox = match last_chatbox_sent_at {
+                None => true,
+                Some(t) => now.duration_since(t) >= interval,
+            };
+            if should_send_chatbox {
+                if let Some(clicker) = clicker.as_mut() {
+                    safe_set_chatbox_typing(clicker, false);
+                    safe_send_chatbox_input(
+                        clicker,
+                        &cfg.control.chatbox_text,
+                        true,
+                        false,
+                    );
+                    last_chatbox_sent_at = Some(now);
+                    info!(
+                        interval_ms = cfg.control.chatbox_interval_ms.max(1),
+                        "chatbox message sent"
+                    );
+                }
+            }
+        } else {
+            last_chatbox_sent_at = None;
         }
 
         let bgra = match mat_bgra_from_bytes(pkt.w, pkt.h, &pkt.bgra) {

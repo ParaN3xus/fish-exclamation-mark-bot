@@ -302,6 +302,9 @@ pub struct ControlConfig {
     pub osc_target_port: u16,
     pub click_hold_ms: u64,
     pub jump_press_time_s: f32,
+    pub chatbox_enabled: bool,
+    pub chatbox_interval_ms: u64,
+    pub chatbox_text: String,
 }
 
 impl Default for ControlConfig {
@@ -311,6 +314,11 @@ impl Default for ControlConfig {
             osc_target_port: 9000,
             click_hold_ms: 50,
             jump_press_time_s: 0.01,
+            chatbox_enabled: false,
+            chatbox_interval_ms: 5_000,
+            chatbox_text:
+                "Auto fishing with https://github.com/ParaN3xus/fish-exclamation-mark-bot"
+                    .to_string(),
         }
     }
 }

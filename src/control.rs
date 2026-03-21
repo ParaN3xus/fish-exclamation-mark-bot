@@ -104,6 +104,35 @@ impl VrchatClicker {
         self.pump_pending_actions()
     }
 
+    pub fn set_chatbox_typing(&mut self, typing: bool) -> Result<()> {
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/chatbox/typing".to_string(),
+            args: vec![OscType::Bool(typing)],
+        });
+        self.rt
+            .block_on(self.client.send_to_addr(packet, self.osc_target))?;
+        Ok(())
+    }
+
+    pub fn send_chatbox_input(
+        &mut self,
+        text: &str,
+        send_immediately: bool,
+        trigger_sfx: bool,
+    ) -> Result<()> {
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/chatbox/input".to_string(),
+            args: vec![
+                OscType::String(text.to_string()),
+                OscType::Bool(send_immediately),
+                OscType::Bool(trigger_sfx),
+            ],
+        });
+        self.rt
+            .block_on(self.client.send_to_addr(packet, self.osc_target))?;
+        Ok(())
+    }
+
     pub fn set_press(&mut self, press: bool) -> Result<()> {
         self.desired_pressed = press;
         self.sync_mouse_state()
