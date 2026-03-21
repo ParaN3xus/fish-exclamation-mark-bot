@@ -1117,18 +1117,31 @@ pub fn run_detect(
                             }
                         }
                     }
-                    if first_det_at.is_none()
-                        && now
+                    if first_det_at.is_none() {
+                        if now
                             .duration_since(state_entered_at.unwrap_or(now))
                             .as_millis()
                             >= u128::from(cfg.state_machine.reel_first_det_timeout_ms)
+                        {
+                            let from = bot_state;
+                            bot_state = BotState::WaitingFish;
+                            log_transition(
+                                from,
+                                bot_state,
+                                "BiteOrError first-detect timeout",
+                                &mut status_text,
+                                &mut state_entered_at,
+                            );
+                        }
+                    } else if now.duration_since(first_det_at.unwrap_or(now)).as_millis()
+                        >= u128::from(cfg.state_machine.reel_second_det_timeout_ms)
                     {
                         let from = bot_state;
                         bot_state = BotState::WaitingFish;
                         log_transition(
                             from,
                             bot_state,
-                            "BiteOrError first-detect timeout",
+                            "BiteOrError second-detect timeout",
                             &mut status_text,
                             &mut state_entered_at,
                         );

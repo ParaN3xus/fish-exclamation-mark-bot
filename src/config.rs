@@ -205,6 +205,7 @@ pub struct StateMachineConfig {
     pub second_detect_delay_ms: u64,
     pub wait_bite_timeout_ms: u64,
     pub reel_first_det_timeout_ms: u64,
+    pub reel_second_det_timeout_ms: u64,
     pub fishing_timeout_ms: u64,
     pub fishing_yolo_check_ms: u64,
     pub fishing_detect_fps_limit: f32,
@@ -217,7 +218,8 @@ impl Default for StateMachineConfig {
         Self {
             second_detect_delay_ms: 160,
             wait_bite_timeout_ms: 34_000,
-            reel_first_det_timeout_ms: 2_000,
+            reel_first_det_timeout_ms: 500,
+            reel_second_det_timeout_ms: 500,
             fishing_timeout_ms: 60_000,
             fishing_yolo_check_ms: 500,
             fishing_detect_fps_limit: 60.0,
