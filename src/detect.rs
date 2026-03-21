@@ -49,6 +49,13 @@ struct YoloWorker {
     class_id: i32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PostClickYoloWait {
+    active: bool,
+    last_eval_seq: u64,
+    first_det_at: Option<Instant>,
+}
+
 fn spawn_yolo_worker(
     stop: Arc<AtomicBool>,
     model_path: String,
@@ -174,6 +181,22 @@ fn safe_click_once(clicker: &mut VrchatClicker) {
     if let Err(e) = clicker.click_once() {
         error!(error = ?e, "control click_once failed");
     }
+}
+
+fn safe_click_once_and_wait_yolo(
+    clicker: &mut VrchatClicker,
+    wait: &mut PostClickYoloWait,
+    current_yolo_seq: u64,
+) {
+    safe_click_once(clicker);
+    wait.active = true;
+    wait.last_eval_seq = current_yolo_seq;
+    wait.first_det_at = None;
+}
+
+fn clear_post_click_yolo_wait(wait: &mut PostClickYoloWait) {
+    wait.active = false;
+    wait.first_det_at = None;
 }
 
 fn safe_cancel_pending_actions(clicker: &mut VrchatClicker) {
@@ -455,6 +478,7 @@ pub fn run_detect(
     let mut yolo_latest_seq: u64 = 0;
     let mut yolo_latest_det: Option<crate::types::OuterDet> = None;
     let mut bite_or_error_last_yolo_seq: u64 = 0;
+    let mut post_click_yolo_wait = PostClickYoloWait::default();
     let mut fishing_periodic_pending: bool = false;
     let mut fishing_periodic_last_eval_seq: u64 = 0;
     let mut fishing_periodic_miss_once: bool = false;
@@ -605,7 +629,7 @@ pub fn run_detect(
             BotState::Fishing => {
                 fishing_periodic_pending && yolo_latest_seq == fishing_periodic_last_eval_seq
             }
-            _ => false,
+            _ => post_click_yolo_wait.active,
         };
         if should_submit_yolo {
             if let Err(e) = ensure_bgr_from_bgra(&bgra, &mut bgr) {
@@ -652,7 +676,7 @@ pub fn run_detect(
         let mut policy_player_center: Option<f32> = None;
         let mut policy_progress: Option<f32> = None;
         let mut policy_target_half: Option<f32> = None;
-        let mut status_text: String;
+        let mut status_text: String = state_name(bot_state).to_string();
 
         while let Ok(cmd) = rx_cmd.try_recv() {
             match cmd {
@@ -670,6 +694,7 @@ pub fn run_detect(
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
                     waiting_timeout_transition_at = None;
+                    clear_post_click_yolo_wait(&mut post_click_yolo_wait);
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -695,6 +720,7 @@ pub fn run_detect(
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
                     waiting_timeout_transition_at = None;
+                    clear_post_click_yolo_wait(&mut post_click_yolo_wait);
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -721,6 +747,7 @@ pub fn run_detect(
                         fishing_periodic_miss_once = false;
                         fishing_periodic_retry_after = None;
                         waiting_timeout_transition_at = None;
+                        clear_post_click_yolo_wait(&mut post_click_yolo_wait);
                         bot_state = BotState::Stopped;
                         if press {
                             if let Some(clicker) = clicker.as_mut() {
@@ -838,6 +865,67 @@ pub fn run_detect(
         }
 
         if state_machine_enabled {
+            if bot_state != BotState::Fishing
+                && bot_state != BotState::BiteOrError
+                && post_click_yolo_wait.active
+                && yolo_latest_seq != post_click_yolo_wait.last_eval_seq
+            {
+                post_click_yolo_wait.last_eval_seq = yolo_latest_seq;
+                if let Some(o) = yolo_latest_det {
+                    outer_draw = Some(o.b);
+                    yolo_top_draw = Some(o.top);
+                    yolo_bot_draw = Some(o.bot);
+                    if post_click_yolo_wait.first_det_at.is_none() {
+                        info!("post-click first yolo detection acquired");
+                        post_click_yolo_wait.first_det_at = Some(now);
+                    } else if now
+                        .duration_since(post_click_yolo_wait.first_det_at.unwrap_or(now))
+                        .as_millis()
+                        >= u128::from(cfg.state_machine.second_detect_delay_ms)
+                    {
+                        ensure_gray_from_bgra(&bgra, &mut gray)?;
+                        let gray_ref = gray.as_ref().expect("gray just initialized");
+                        if let Some((st, br, fish)) = init_track_from_outer(
+                            o.b,
+                            o.top,
+                            o.bot,
+                            gray_ref,
+                            pkt.w,
+                            pkt.h,
+                            &mut fish_scratch,
+                        )? {
+                            track_state = Some(st);
+                            if let Some(b) = br {
+                                let (p0, p1) = bright_endpoints_along_axis(b, o.top, o.bot);
+                                bright_p0_draw = Some(p0);
+                                bright_p1_draw = Some(p1);
+                            }
+                            if let Some(f) = fish {
+                                fish_p_draw = Some(Kp {
+                                    x: (f.x + f.w / 2) as f32,
+                                    y: (f.y + f.h / 2) as f32,
+                                });
+                            }
+                            policy = None;
+                            obs_filter = None;
+                            last_obs_tick = None;
+                            clear_post_click_yolo_wait(&mut post_click_yolo_wait);
+                            let from = bot_state;
+                            bot_state = BotState::Fishing;
+                            log_transition(
+                                from,
+                                bot_state,
+                                "post-click tracking initialized",
+                                &mut status_text,
+                                &mut state_entered_at,
+                            );
+                        } else {
+                            post_click_yolo_wait.first_det_at = Some(now);
+                        }
+                    }
+                }
+            }
+
             match bot_state {
                 BotState::WaitingFish => {
                     status_text = if waiting_timeout_transition_at.is_some() {
@@ -947,7 +1035,11 @@ pub fn run_detect(
                         }
                         if let Some(clicker) = clicker.as_mut() {
                             info!("bite-or-error action: click once");
-                            safe_click_once(clicker);
+                            safe_click_once_and_wait_yolo(
+                                clicker,
+                                &mut post_click_yolo_wait,
+                                yolo_latest_seq,
+                            );
                         }
                     }
                     if yolo_latest_seq != bite_or_error_last_yolo_seq {
@@ -1012,6 +1104,7 @@ pub fn run_detect(
                                     obs_filter = None;
                                     last_obs_tick = None;
                                     bot_state = BotState::Fishing;
+                                    clear_post_click_yolo_wait(&mut post_click_yolo_wait);
                                     log_transition(
                                         BotState::BiteOrError,
                                         bot_state,
@@ -1024,7 +1117,6 @@ pub fn run_detect(
                             }
                         }
                     }
-
                     if first_det_at.is_none()
                         && now
                             .duration_since(state_entered_at.unwrap_or(now))
@@ -1348,7 +1440,11 @@ pub fn run_detect(
                     {
                         if let Some(clicker) = clicker.as_mut() {
                             info!("collect action: click once");
-                            safe_click_once(clicker);
+                            safe_click_once_and_wait_yolo(
+                                clicker,
+                                &mut post_click_yolo_wait,
+                                yolo_latest_seq,
+                            );
                         }
                         bot_state = BotState::ReleaseLine;
                         log_transition(
@@ -1378,7 +1474,11 @@ pub fn run_detect(
                     {
                         if let Some(clicker) = clicker.as_mut() {
                             info!("release action: click once");
-                            safe_click_once(clicker);
+                            safe_click_once_and_wait_yolo(
+                                clicker,
+                                &mut post_click_yolo_wait,
+                                yolo_latest_seq,
+                            );
                         }
                         bot_state = BotState::WaitingFish;
                         log_transition(
