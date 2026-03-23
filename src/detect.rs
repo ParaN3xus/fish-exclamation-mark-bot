@@ -991,9 +991,7 @@ pub fn run_detect(
                     fishing_periodic_pending = false;
                     fishing_periodic_miss_once = false;
                     fishing_periodic_retry_after = None;
-                    if bot_state != BotState::WaitingFish {
-                        waiting_timeout_transition_at = None;
-                    }
+                    clear_post_click_yolo_wait(&mut post_click_yolo_wait);
                     if press {
                         if let Some(clicker) = clicker.as_mut() {
                             safe_set_press(clicker, false);
@@ -1004,7 +1002,20 @@ pub fn run_detect(
                         safe_cancel_pending_actions(clicker);
                     }
 
-                    if audio_events.bite_hit {
+                    if waiting_timeout_transition_at.is_some() {
+                        if now >= waiting_timeout_transition_at.unwrap_or(now) {
+                            waiting_timeout_transition_at = None;
+                            let from = bot_state;
+                            bot_state = BotState::BiteOrError;
+                            log_transition(
+                                from,
+                                bot_state,
+                                "WaitingFish timeout",
+                                &mut status_text,
+                                &mut state_entered_at,
+                            );
+                        }
+                    } else if audio_events.bite_hit {
                         waiting_timeout_transition_at = None;
                         let from = bot_state;
                         bot_state = BotState::BiteOrError;
@@ -1012,19 +1023,6 @@ pub fn run_detect(
                             from,
                             bot_state,
                             "bite audio detected",
-                            &mut status_text,
-                            &mut state_entered_at,
-                        );
-                    } else if waiting_timeout_transition_at
-                        .is_some_and(|transition_at| now >= transition_at)
-                    {
-                        waiting_timeout_transition_at = None;
-                        let from = bot_state;
-                        bot_state = BotState::BiteOrError;
-                        log_transition(
-                            from,
-                            bot_state,
-                            "WaitingFish timeout",
                             &mut status_text,
                             &mut state_entered_at,
                         );
